@@ -5,6 +5,8 @@
 
 `webpprof` is a Telescope-like, in-memory application profiler for Go. It collects related application events in a searchable UI with live WebSocket updates. It is intended for development and short investigations, not durable storage.
 
+![webpprof query details with a correlated request and highlighted SQL](docs/images/webpprof-query-details.png)
+
 ## Install
 
 ```sh
