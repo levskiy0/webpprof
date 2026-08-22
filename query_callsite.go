@@ -30,6 +30,15 @@ func CaptureQueryCallsite() []SourceFrame {
 	return result
 }
 
+// CaptureQueryCallsite returns a stack only when automatic query callsite
+// capture is enabled for this profiler.
+func (p *Profiler) CaptureQueryCallsite() []SourceFrame {
+	if p == nil || !p.config.queryCallsite {
+		return nil
+	}
+	return CaptureQueryCallsite()
+}
+
 func isQueryInfrastructureFrame(function string) bool {
 	if function == "" || strings.HasPrefix(function, "runtime.") || strings.HasPrefix(function, "database/sql.") {
 		return true
@@ -57,7 +66,7 @@ func (p *Profiler) prepareQuery(query *Query) {
 		return
 	}
 	if len(query.Callsite) == 0 && p.config.queryCallsite {
-		query.Callsite = CaptureQueryCallsite()
+		query.Callsite = p.CaptureQueryCallsite()
 	}
 	if p.config.sourceLink == nil {
 		return

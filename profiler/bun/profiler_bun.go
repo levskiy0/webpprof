@@ -71,7 +71,7 @@ func ProfileWith(profiler *webpprof.Profiler, db *bun.DB, configs ...Config) *bu
 func (h *bunQueryProfiler) BeforeQuery(ctx context.Context, _ *bun.QueryEvent) context.Context {
 	return context.WithValue(ctx, queryTraceContextKey{}, queryTrace{
 		startedAt: time.Now().UTC(),
-		callsite:  webpprof.CaptureQueryCallsite(),
+		callsite:  h.profiler.CaptureQueryCallsite(),
 	})
 }
 

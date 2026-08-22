@@ -54,8 +54,12 @@ func (c *sqlConnProfiler) explain(ctx context.Context, query string, args []driv
 }
 
 func explainableSQL(query string) bool {
-	operation := sqlOperation(query)
-	return operation == "SELECT" || operation == "WITH"
+	query = strings.TrimSpace(query)
+	if sqlOperation(query) != "SELECT" {
+		return false
+	}
+	query = strings.TrimSuffix(query, ";")
+	return !strings.Contains(query, ";")
 }
 
 func explainCommand(driverName, query string) (string, error) {

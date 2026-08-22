@@ -224,7 +224,7 @@ func (c *sqlConnProfiler) Exec(query string, args []driver.Value) (driver.Result
 	if !ok {
 		return nil, driver.ErrSkip
 	}
-	callsite := webpprof.CaptureQueryCallsite()
+	callsite := c.profiler.CaptureQueryCallsite()
 	plan := c.explain(context.Background(), query, namedValues(args))
 	startedAt := time.Now().UTC()
 	result, err := execer.Exec(query, args)
@@ -233,7 +233,7 @@ func (c *sqlConnProfiler) Exec(query string, args []driver.Value) (driver.Result
 }
 
 func (c *sqlConnProfiler) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	callsite := webpprof.CaptureQueryCallsite()
+	callsite := c.profiler.CaptureQueryCallsite()
 	plan := c.explain(ctx, query, args)
 	startedAt := time.Now().UTC()
 	var result driver.Result
@@ -263,7 +263,7 @@ func (c *sqlConnProfiler) Query(query string, args []driver.Value) (driver.Rows,
 	if !ok {
 		return nil, driver.ErrSkip
 	}
-	callsite := webpprof.CaptureQueryCallsite()
+	callsite := c.profiler.CaptureQueryCallsite()
 	plan := c.explain(context.Background(), query, namedValues(args))
 	startedAt := time.Now().UTC()
 	rows, err := queryer.Query(query, args)
@@ -272,7 +272,7 @@ func (c *sqlConnProfiler) Query(query string, args []driver.Value) (driver.Rows,
 }
 
 func (c *sqlConnProfiler) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	callsite := webpprof.CaptureQueryCallsite()
+	callsite := c.profiler.CaptureQueryCallsite()
 	plan := c.explain(ctx, query, args)
 	startedAt := time.Now().UTC()
 	var rows driver.Rows
@@ -364,7 +364,7 @@ func (s *sqlStmtProfiler) CheckNamedValue(value *driver.NamedValue) error {
 }
 
 func (s *sqlStmtProfiler) Exec(args []driver.Value) (driver.Result, error) {
-	callsite := webpprof.CaptureQueryCallsite()
+	callsite := s.profiler.CaptureQueryCallsite()
 	plan := s.conn.explain(context.Background(), s.query, namedValues(args))
 	startedAt := time.Now().UTC()
 	result, err := s.inner.Exec(args)
@@ -373,7 +373,7 @@ func (s *sqlStmtProfiler) Exec(args []driver.Value) (driver.Result, error) {
 }
 
 func (s *sqlStmtProfiler) Query(args []driver.Value) (driver.Rows, error) {
-	callsite := webpprof.CaptureQueryCallsite()
+	callsite := s.profiler.CaptureQueryCallsite()
 	plan := s.conn.explain(context.Background(), s.query, namedValues(args))
 	startedAt := time.Now().UTC()
 	rows, err := s.inner.Query(args)
@@ -382,7 +382,7 @@ func (s *sqlStmtProfiler) Query(args []driver.Value) (driver.Rows, error) {
 }
 
 func (s *sqlStmtProfiler) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
-	callsite := webpprof.CaptureQueryCallsite()
+	callsite := s.profiler.CaptureQueryCallsite()
 	plan := s.conn.explain(ctx, s.query, args)
 	startedAt := time.Now().UTC()
 	var result driver.Result
@@ -406,7 +406,7 @@ func (s *sqlStmtProfiler) ExecContext(ctx context.Context, args []driver.NamedVa
 }
 
 func (s *sqlStmtProfiler) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
-	callsite := webpprof.CaptureQueryCallsite()
+	callsite := s.profiler.CaptureQueryCallsite()
 	plan := s.conn.explain(ctx, s.query, args)
 	startedAt := time.Now().UTC()
 	var rows driver.Rows
