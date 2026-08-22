@@ -27,6 +27,7 @@ type Profiler struct {
 	serverAddr        string
 	loginMu           sync.Mutex
 	loginFailures     map[string]loginFailure
+	requestRemaining  atomic.Int64
 }
 
 func New(router Router, options ...Option) *Profiler {
@@ -51,7 +52,9 @@ func newProfiler(options ...Option) *Profiler {
 			option(&c)
 		}
 	}
-	return &Profiler{config: c, store: newEntryStore(c), startedAt: time.Now().UTC(), sessionToken: newID(), loginFailures: make(map[string]loginFailure)}
+	profiler := &Profiler{config: c, store: newEntryStore(c), startedAt: time.Now().UTC(), sessionToken: newID(), loginFailures: make(map[string]loginFailure)}
+	profiler.requestRemaining.Store(c.requestLimit)
+	return profiler
 }
 
 func NewIf(enabled bool, router Router, options ...Option) *Profiler {
@@ -106,17 +109,19 @@ func (p *Profiler) ShouldCaptureRequest(request *http.Request) bool {
 			return false
 		}
 	}
-	if p.config.requestSample >= 1 {
-		return true
-	}
 	if p.config.requestSample <= 0 {
 		return false
 	}
-	var sample [8]byte
-	if _, err := rand.Read(sample[:]); err != nil {
-		return false
+	if p.config.requestSample < 1 {
+		var sample [8]byte
+		if _, err := rand.Read(sample[:]); err != nil {
+			return false
+		}
+		if float64(binary.BigEndian.Uint64(sample[:]))/float64(^uint64(0)) >= p.config.requestSample {
+			return false
+		}
 	}
-	return float64(binary.BigEndian.Uint64(sample[:]))/float64(^uint64(0)) < p.config.requestSample
+	return p.takeRequestCaptureSlot()
 }
 
 func NewID() string {
@@ -147,6 +152,9 @@ func (p *Profiler) Close() error {
 
 func (p *Profiler) LogRequest(request Request) {
 	if p == nil {
+		return
+	}
+	if !p.shouldRetainRequest(request) {
 		return
 	}
 	if request.ID == "" {

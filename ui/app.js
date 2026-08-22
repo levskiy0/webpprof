@@ -1,4 +1,4 @@
-const state={events:new Map(),analyses:new Map(),analysisPending:new Set(),sessionMode:"live",kind:"request",selected:"",requestTab:"payload",responseTab:"response",relatedTab:"query",screen:"dashboard",paused:false,pending:[],socket:null,reconnect:0,reconnectTimer:0,socketStableTimer:0,runtime:[],queueStats:{sources:[]},dashboard:{widgets:[]},dashboardHistory:new Map(),stats:{},hasMore:false,loadingMore:false,watchedTags:new Set(),filters:{}};
+const state={events:new Map(),analyses:new Map(),analysisPending:new Set(),sessionMode:"live",kind:"request",selected:"",queryTab:"query",requestTab:"payload",responseTab:"response",relatedTab:"query",screen:"dashboard",paused:false,pending:[],socket:null,reconnect:0,reconnectTimer:0,socketStableTimer:0,runtime:[],queueStats:{sources:[]},dashboard:{widgets:[]},dashboardHistory:new Map(),stats:{},hasMore:false,loadingMore:false,watchedTags:new Set(),filters:{}};
 const pageSize=250;
 const kinds=["request","middleware","query","cache","job","email","log","http_call","schedule","exception","event",""];
 const navItems=["dashboard",...kinds];
@@ -150,6 +150,7 @@ function bind(){
       if(group==="request")state.requestTab=value;
       if(group==="response")state.responseTab=value;
       if(group==="related")state.relatedTab=value;
+      if(group==="query")state.queryTab=value;
       syncLocation();
       renderDetail(state.events.get(state.selected));
       return;
@@ -1061,6 +1062,7 @@ function openDetail(id,historyMode="push"){
   state.requestTab="payload";
   state.responseTab="response";
   state.relatedTab=firstRelatedTab(groupFor(state.events.get(id)));
+  state.queryTab="query";
   state.screen="detail";
   syncLocation(historyMode);
   renderKinds();
@@ -1095,7 +1097,8 @@ function restoreLocation(){
   restoreListFilters(params);
   state.selected=entry;
   const tab=params.get("tab")||"";
-  if(tab==="request")state.requestTab="payload";
+  if(state.events.get(entry).kind==="query")state.queryTab=["query","callsite","explain","replay"].includes(tab)?tab:"query";
+  else if(tab==="request")state.requestTab="payload";
   else if(tab==="response")state.responseTab="response";
   else if(tab)state.relatedTab=tab;
   else state.relatedTab=firstRelatedTab(groupFor(state.events.get(entry)));
@@ -1131,7 +1134,7 @@ function syncLocation(mode="replace"){
   for(const tag of [...state.watchedTags].sort())url.searchParams.append("tag",tag);
   if(state.screen==="detail"&&state.selected){
     url.searchParams.set("entry",state.selected);
-    url.searchParams.set("tab",state.relatedTab);
+    url.searchParams.set("tab",state.events.get(state.selected)?.kind==="query"?state.queryTab:state.relatedTab);
     url.searchParams.set("view",state.kind||"all");
   }else{
     url.searchParams.set("view",state.screen==="dashboard"?"dashboard":state.kind||"all");
@@ -1247,7 +1250,7 @@ function renderDetail(event){
   const group=groupFor(event);
   elements.back.innerHTML=`<span aria-hidden="true">←</span> Back to ${escapeHTML(kindLabel(state.kind).toLowerCase())}`;
   if(event.kind==="query"){
-    elements.detail.innerHTML=`<div class="detail-body telescope-stack">${queryDetailsCard(event,group.request)}${querySQLCard(event)}${queryCallsiteCard(event)}${queryPlanCard(event)}${queryReplayCard(event)}</div>`;
+    elements.detail.innerHTML=`<div class="detail-body telescope-stack">${queryDetailsCard(event,group.request)}${queryCard(event)}</div>`;
     return;
   }
   if(event.kind==="cache"){
@@ -1258,38 +1261,43 @@ function renderDetail(event){
     elements.detail.innerHTML=`<div class="detail-body telescope-stack">${entityDetailsCard(event,group.request)}${entityContentCards(event)}</div>`;
     return;
   }
+  if(!state.analyses.has(event.id)&&state.sessionMode==="live")loadRequestAnalysis(event.id);
   const relatedTabs=relatedDefinitions(group);
   if(!relatedTabs.some(tab=>tab.key===state.relatedTab))state.relatedTab=relatedTabs[0].key;
   elements.detail.innerHTML=`
     <div class="detail-body telescope-stack">
       ${requestDetailsCard(event)}
-      ${requestDiagnosticsCard(group)}
       ${requestCard(event)}
       ${responseCard(event)}
       ${relatedCard(group,event,relatedTabs)}
     </div>`;
 }
 
-function requestDiagnosticsCard(group){
+function requestFindingsPanel(group){
   const request=group.request;
-  if(!request)return"";
+  if(!request)return'<div class="diagnostic-pending">Request data is unavailable.</div>';
   const analysis=state.analyses.get(request.id);
   if(!analysis&&state.sessionMode==="live")loadRequestAnalysis(request.id);
   if(!analysis){
     const message=state.sessionMode==="imported"?"Analysis was not included in this imported session.":"Analyzing the complete request timeline…";
-    return`<section class="detail-section telescope-card diagnostics-card"><div class="section-heading"><h3>Automatic findings</h3><span>${state.sessionMode==="imported"?"Unavailable":"Running"}</span></div><div class="diagnostic-pending">${escapeHTML(message)}</div></section>`;
+    return`<div class="diagnostic-pending">${escapeHTML(message)}</div>`;
   }
   if(analysis.error){
-    return`<section class="detail-section telescope-card diagnostics-card"><div class="section-heading"><h3>Automatic findings</h3><span>Unavailable</span></div><div class="diagnostic-pending">${escapeHTML(analysis.error)}</div></section>`;
+    return`<div class="diagnostic-pending">${escapeHTML(analysis.error)}</div>`;
   }
   const findings=Array.isArray(analysis.findings)?analysis.findings:[];
-  const content=findings.length?findings.map(finding=>{
+  const severityRank={danger:0,warning:1,info:2};
+  const severityLabels={danger:"Critical",warning:"Potential",info:"Info"};
+  const severityMarks={danger:"!",warning:"?",info:"i"};
+  const ordered=[...findings].sort((left,right)=>(severityRank[left.severity]??1)-(severityRank[right.severity]??1));
+  const content=ordered.length?ordered.map(finding=>{
     const entryID=typeof finding.entry_id==="string"&&state.events.has(finding.entry_id)?finding.entry_id:"";
     const severity=["info","warning","danger"].includes(finding.severity)?finding.severity:"warning";
+    const severityLabel=severityLabels[severity];
     const supporting=[finding.detail,finding.suggestion].filter(Boolean).join(" · ");
-    return`<button type="button" class="diagnostic-row ${severity}"${entryID?` data-event-id="${escapeHTML(entryID)}"`:""}><span class="diagnostic-mark" aria-hidden="true"></span><span><strong>${escapeHTML(finding.title||"Finding")}</strong>${supporting?`<small>${escapeHTML(supporting)}</small>`:""}</span>${entryID?rowAction():""}</button>`;
+    return`<button type="button" class="diagnostic-row ${severity}" aria-label="${escapeHTML(severityLabel)}: ${escapeHTML(finding.title||"Finding")}"${entryID?` data-event-id="${escapeHTML(entryID)}"`:""}><span class="diagnostic-mark" aria-hidden="true">${severityMarks[severity]}</span><span class="diagnostic-copy"><strong>${escapeHTML(finding.title||"Finding")}</strong>${supporting?`<small>${escapeHTML(supporting)}</small>`:""}</span><span class="diagnostic-severity">${severityLabel}</span>${entryID?rowAction():'<span class="diagnostic-action-placeholder" aria-hidden="true"></span>'}</button>`;
   }).join(""):'<div class="diagnostic-healthy"><span aria-hidden="true">✓</span><strong>No automatic findings</strong><small>The recorded request timeline passed the current diagnostic rules.</small></div>';
-  return`<section class="detail-section telescope-card diagnostics-card"><div class="section-heading"><h3>Automatic findings</h3><span>${findings.length?`${findings.length} ${plural(findings.length,"finding","findings")}`:"Healthy"}</span></div><div class="diagnostic-list">${content}</div></section>`;
+  return`<div class="diagnostic-list">${content}</div>`;
 }
 
 function loadRequestAnalysis(requestID){
@@ -1336,6 +1344,10 @@ function relatedDefinitions(group){
     ["event","Events","event"]
   ];
   const tabs=definitions.filter(([, ,kind])=>(group.byKind.get(kind)||[]).length).map(([key,label,kind])=>({key,label,count:(group.byKind.get(kind)||[]).length}));
+  const analysis=group.request?state.analyses.get(group.request.id):null;
+  const findings=Array.isArray(analysis?.findings)?analysis.findings:[];
+  const findingBadge=analysis?.error?"!":analysis?findings.length:"…";
+  tabs.unshift({key:"findings",label:"Findings",badge:findingBadge});
   tabs.push({key:"timeline",label:"Timeline",count:group.events.length},{key:"raw",label:"Raw",count:undefined});
   return tabs;
 }
@@ -1380,25 +1392,39 @@ function queryDetailsCard(query,request){
   return`<section class="detail-section telescope-card"><div class="section-heading"><h3>Query Details</h3><span>${escapeHTML(query.id)}</span></div><dl class="facts">${facts.map(([name,value,html])=>`<dt>${escapeHTML(name)}</dt><dd>${html?value:escapeHTML(value)}</dd>`).join("")}</dl>${data.error?`<div class="danger-block">${escapeHTML(data.error)}</div>`:""}</section>`;
 }
 
-function querySQLCard(query){
-  return`<section class="detail-section telescope-card"><nav class="card-tabs query-tabs" aria-label="SQL query"><span class="card-tab active">Query</span><button type="button" class="copy-button" data-copy-query aria-label="Copy SQL" title="Copy SQL"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 8h9v11H9zM6 16H4V5h9v3"/></svg><span>Copied</span></button></nav><div class="card-panel">${sqlPanel((query.data||{}).sql||"")}</div></section>`;
+function queryCard(query){
+  const tabs=[{key:"query",label:"Query"},{key:"callsite",label:"Callsite"},{key:"explain",label:"EXPLAIN"},{key:"replay",label:"Go replay"}];
+  if(!tabs.some(tab=>tab.key===state.queryTab))state.queryTab="query";
+  let panel;
+  let action="";
+  if(state.queryTab==="callsite")panel=queryCallsitePanel(query);
+  else if(state.queryTab==="explain"){
+    panel=queryPlanPanel(query);
+    if(query.data?.plan?.text)action=queryCopyButton("plan");
+  }else if(state.queryTab==="replay"){
+    panel=codePanel(queryReplayCode(query),false,"No SQL was captured.");
+    action=queryCopyButton("replay");
+  }else{
+    panel=sqlPanel((query.data||{}).sql||"");
+    action=queryCopyButton("query");
+  }
+  return tabbedCard("Query",tabs,state.queryTab,panel,action);
 }
 
-function queryCallsiteCard(query){
+function queryCallsitePanel(query){
   const frames=Array.isArray(query.data?.callsite)?query.data.callsite:[];
-  const panel=frames.length?`<div class="query-callsite">${frames.map((frame,index)=>`<div class="source-frame${index===0?" primary":""}"><span class="source-index">${index+1}</span><span class="source-copy"><strong>${sourceFrameLocation(frame,false)}</strong><code>${escapeHTML(frame.function||"unknown function")}</code></span><span class="source-actions">${safeSourceURL(frame.url)?`<a href="${escapeHTML(safeSourceURL(frame.url))}" title="Open source">Open</a>`:""}<button type="button" data-copy-source="${index}" title="Copy ${escapeHTML(`${frame.file||""}:${frame.line||0}`)}">Copy</button></span></div>`).join("")}</div>`:'<div class="panel-empty">No Go callsite was captured.</div>';
-  return`<section class="detail-section telescope-card"><nav class="card-tabs query-tabs" aria-label="Query callsite"><span class="card-tab active">Callsite</span><span class="query-card-meta">${frames.length?`${frames.length} frames`:"not captured"}</span></nav><div class="card-panel source-panel">${panel}</div></section>`;
+  return frames.length?`<div class="query-callsite">${frames.map((frame,index)=>`<div class="source-frame${index===0?" primary":""}"><span class="source-index">${index+1}</span><span class="source-copy"><strong>${sourceFrameLocation(frame,false)}</strong><code>${escapeHTML(frame.function||"unknown function")}</code></span><span class="source-actions">${safeSourceURL(frame.url)?`<a href="${escapeHTML(safeSourceURL(frame.url))}" title="Open source">Open</a>`:""}<button type="button" data-copy-source="${index}" title="Copy ${escapeHTML(`${frame.file||""}:${frame.line||0}`)}">Copy</button></span></div>`).join("")}</div>`:'<div class="panel-empty">No Go callsite was captured.</div>';
 }
 
-function queryPlanCard(query){
+function queryPlanPanel(query){
   const plan=query.data?.plan;
-  const meta=plan?.duration_ns?duration(plan.duration_ns):plan?"captured":"opt-in";
   const panel=plan?.text?codePanel(plan.text,false,"No plan rows were returned."):'<div class="panel-empty">EXPLAIN was not captured. Enable it explicitly in the SQL integration.</div>';
-  return`<section class="detail-section telescope-card"><nav class="card-tabs query-tabs" aria-label="Query plan"><span class="card-tab active">EXPLAIN</span><span class="query-card-meta">${escapeHTML(meta)}</span>${plan?.text?`<button type="button" class="copy-button" data-copy-query-plan aria-label="Copy EXPLAIN" title="Copy EXPLAIN"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 8h9v11H9zM6 16H4V5h9v3"/></svg><span>Copied</span></button>`:""}</nav><div class="card-panel">${panel}</div>${plan?.error?`<div class="danger-block">${escapeHTML(plan.error)}</div>`:""}</section>`;
+  return`${panel}${plan?.error?`<div class="danger-block">${escapeHTML(plan.error)}</div>`:""}`;
 }
 
-function queryReplayCard(query){
-  return`<section class="detail-section telescope-card"><nav class="card-tabs query-tabs" aria-label="Go query replay"><span class="card-tab active">Go replay</span><span class="query-card-meta">arguments are never recorded</span><button type="button" class="copy-button" data-copy-query-replay aria-label="Copy Go replay" title="Copy Go replay"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 8h9v11H9zM6 16H4V5h9v3"/></svg><span>Copied</span></button></nav><div class="card-panel">${codePanel(queryReplayCode(query),false,"No SQL was captured.")}</div></section>`;
+function queryCopyButton(kind){
+  const attributes=kind==="plan"?'data-copy-query-plan aria-label="Copy EXPLAIN" title="Copy EXPLAIN"':kind==="replay"?'data-copy-query-replay aria-label="Copy Go replay" title="Copy Go replay"':'data-copy-query aria-label="Copy SQL" title="Copy SQL"';
+  return`<button type="button" class="copy-button" ${attributes}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 8h9v11H9zM6 16H4V5h9v3"/></svg><span>Copied</span></button>`;
 }
 
 function queryReplayCode(query){
@@ -1559,7 +1585,8 @@ function responseCard(request){
 
 function relatedCard(group,event,tabs){
   let panel;
-  if(state.relatedTab==="timeline")panel=timeline(group.events);
+  if(state.relatedTab==="findings")panel=requestFindingsPanel(group);
+  else if(state.relatedTab==="timeline")panel=timeline(group.events);
   else if(state.relatedTab==="raw")panel=rawBlock(event.data);
   else panel=relatedCollection(state.relatedTab,group.byKind.get(state.relatedTab)||[]);
   return tabbedCard("Related",tabs,state.relatedTab,panel);
@@ -1567,7 +1594,7 @@ function relatedCard(group,event,tabs){
 
 function tabbedCard(group,tabs,active,panel,action=""){
   const key=group.toLowerCase();
-  return`<section class="detail-section telescope-card"><nav class="card-tabs" aria-label="${escapeHTML(group)} details">${tabs.map(tab=>`<button type="button" data-card-tab="${key}:${tab.key}" class="card-tab${active===tab.key?" active":""}">${escapeHTML(tab.label)}${tab.count===undefined?"":` <span>(${tab.count})</span>`}</button>`).join("")}${action}</nav><div class="card-panel">${panel}</div></section>`;
+  return`<section class="detail-section telescope-card"><nav class="card-tabs" aria-label="${escapeHTML(group)} details">${tabs.map(tab=>`<button type="button" data-card-tab="${key}:${tab.key}" class="card-tab${active===tab.key?" active":""}">${escapeHTML(tab.label)}${tab.badge===undefined?(tab.count===undefined?"":` <span>(${tab.count})</span>`):`<span class="tab-badge">${escapeHTML(tab.badge)}</span>`}</button>`).join("")}${action}</nav><div class="card-panel">${panel}</div></section>`;
 }
 
 function codePanel(value,truncated,emptyMessage){
@@ -1775,7 +1802,7 @@ function timeline(events){
   const byID=new Map(events.map(event=>[event.id,event]));
   const ordered=timelineTree(events,request,byID);
   const critical=timelineCriticalPath(events,first,last);
-  const rows=ordered.map(({event,depth,isLast})=>{
+  const rows=ordered.map(({event,depth,isLast,ancestorContinuations,hasChildren})=>{
     const started=Date.parse(event.started_at);
     const offset=Math.max(0,(Number.isFinite(started)?started:first)-first);
     const recorded=Math.max(eventDuration(event)/1e6,0);
@@ -1786,7 +1813,7 @@ function timeline(events){
     const bottleneckClass=critical.bottleneck?.id===event.id?" bottleneck":"";
     const durationLabel=event.id===request.id&&recorded<windowMS*.99?formatMilliseconds(windowMS):duration(event.duration_ns);
     const operation=event.kind==="request"?requestTarget(event.data||{}):title(event);
-    return`<button type="button" class="gantt-row depth-${Math.min(depth,6)}${isFailure(event)?" failed":""}${criticalClass}${bottleneckClass}" data-event-id="${escapeHTML(event.id)}"><span class="gantt-operation"><span class="gantt-branch" aria-hidden="true">${depth?(isLast?"└─":"├─"):""}</span><span class="gantt-kind" data-kind="${escapeHTML(event.kind)}">${escapeHTML(timelineKindLabel(event.kind))}</span><strong title="${escapeHTML(operation)}">${escapeHTML(operation)}</strong>${critical.bottleneck?.id===event.id?'<em>Bottleneck</em>':""}</span><span class="gantt-track"><svg viewBox="0 0 1000 24" preserveAspectRatio="none" role="img" aria-label="Starts at ${escapeHTML(formatMilliseconds(offset))}, lasts ${escapeHTML(durationLabel)}"><rect class="gantt-bar" data-kind="${escapeHTML(event.kind)}" x="${x.toFixed(2)}" y="4" width="${width.toFixed(2)}" height="16" rx="3"/></svg></span><b>${escapeHTML(durationLabel)}</b>${rowAction()}</button>`;
+    return`<button type="button" class="gantt-row depth-${Math.min(depth,6)}${isFailure(event)?" failed":""}${criticalClass}${bottleneckClass}" data-event-id="${escapeHTML(event.id)}"><span class="gantt-operation">${timelineTreeConnector(depth,isLast,ancestorContinuations,hasChildren)}<span class="gantt-kind" data-kind="${escapeHTML(event.kind)}">${escapeHTML(timelineKindLabel(event.kind))}</span><strong title="${escapeHTML(operation)}">${escapeHTML(operation)}</strong>${critical.bottleneck?.id===event.id?'<em>Bottleneck</em>':""}</span><span class="gantt-track"><svg viewBox="0 0 1000 20" preserveAspectRatio="none" role="img" aria-label="Starts at ${escapeHTML(formatMilliseconds(offset))}, lasts ${escapeHTML(durationLabel)}"><rect class="gantt-bar" data-kind="${escapeHTML(event.kind)}" x="${x.toFixed(2)}" y="3" width="${width.toFixed(2)}" height="14" rx="3"/></svg></span><b>${escapeHTML(durationLabel)}</b>${rowAction()}</button>`;
   }).join("");
   const bottleneck=critical.bottleneck;
   const summary=`<div class="gantt-summary"><div class="gantt-stat"><span>Request window</span><strong>${escapeHTML(formatMilliseconds(windowMS))}</strong></div><div class="gantt-stat"><span>Critical path</span><strong>${escapeHTML(formatMilliseconds(critical.duration))}</strong></div><div class="gantt-stat bottleneck"><span>Bottleneck</span><strong>${escapeHTML(bottleneck?title(bottleneck):"None")}</strong></div></div>`;
@@ -1810,18 +1837,25 @@ function timelineTree(events,request,byID){
   for(const group of children.values())group.sort(compare);
   const ordered=[];
   const visited=new Set();
-  const visit=(event,depth,isLast)=>{
+  const visit=(event,depth,isLast,ancestorContinuations=[])=>{
     if(visited.has(event.id))return;
     visited.add(event.id);
-    ordered.push({event,depth,isLast});
     const nested=children.get(event.id)||[];
-    nested.forEach((child,index)=>visit(child,depth+1,index===nested.length-1));
+    ordered.push({event,depth,isLast,ancestorContinuations,hasChildren:nested.length>0});
+    nested.forEach((child,index)=>visit(child,depth+1,index===nested.length-1,[...ancestorContinuations,!isLast]));
   };
-  visit(request,0,true);
+  visit(request,0,true,[]);
   [...events].sort(compare).forEach(event=>{
-    if(!visited.has(event.id))visit(event,event.kind==="request"?0:1,true);
+    if(!visited.has(event.id))visit(event,event.kind==="request"?0:1,true,event.kind==="request"?[]:[false]);
   });
   return ordered;
+}
+
+function timelineTreeConnector(depth,isLast,ancestorContinuations,hasChildren){
+  const ancestors=(ancestorContinuations||[]).map(continues=>`<i class="${continues?"pass":"blank"}"></i>`).join("");
+  const node=depth===0?`<i class="root${hasChildren?" parent":""}"></i>`:`<i class="${isLast?"end":"fork"}"></i>`;
+  const child=hasChildren?'<i class="child"></i>':'<i class="blank"></i>';
+  return`<span class="gantt-tree" aria-hidden="true">${ancestors}${node}${child}</span>`;
 }
 
 function timelineCriticalPath(events,first,last){

@@ -45,13 +45,15 @@ func isQueryInfrastructureFrame(function string) bool {
 	}
 	for _, prefix := range []string{
 		"github.com/levskiy0/webpprof.CaptureQueryCallsite",
+		"github.com/levskiy0/webpprof.(*Profiler).CaptureQueryCallsite",
 		"github.com/levskiy0/webpprof.(*Profiler).prepareQuery",
 		"github.com/levskiy0/webpprof.(*Profiler).LogQuery",
 		"github.com/levskiy0/webpprof.(*Profiler).LogQueryContext",
 		"github.com/levskiy0/webpprof.LogQuery",
 		"github.com/levskiy0/webpprof.LogQueryContext",
-		"github.com/levskiy0/webpprof/profiler/sql.",
-		"github.com/levskiy0/webpprof/profiler/bun.",
+		"github.com/levskiy0/webpprof/profiler/sql.(*sqlConnProfiler).",
+		"github.com/levskiy0/webpprof/profiler/sql.(*sqlStmtProfiler).",
+		"github.com/levskiy0/webpprof/profiler/bun.(*bunQueryProfiler).",
 		"github.com/uptrace/bun.",
 	} {
 		if strings.HasPrefix(function, prefix) {

@@ -26,6 +26,10 @@ type Option func(*config)
 
 type RequestFilter func(*http.Request) bool
 
+// RequestRetentionFilter decides whether a completed request and all of its
+// related entities should be persisted.
+type RequestRetentionFilter func(Request) bool
+
 // SourceLinkFunc converts a captured Go source frame into an editor or source
 // browser URL. Return an empty string when a frame should not be linked.
 type SourceLinkFunc func(SourceFrame) string
@@ -49,9 +53,11 @@ type config struct {
 	secureCookie     bool
 	allowedOrigins   map[string]struct{}
 	requestFilters   []RequestFilter
+	retentionFilters []RequestRetentionFilter
 	excluded         []requestPattern
 	storagePath      string
 	requestSample    float64
+	requestLimit     int64
 	disabledKinds    map[Kind]struct{}
 	queryCallsite    bool
 	sourceLink       SourceLinkFunc
@@ -77,6 +83,7 @@ func defaultConfig() config {
 		dashboard:        defaultDashboardConfig(),
 		allowedOrigins:   make(map[string]struct{}),
 		requestSample:    1,
+		requestLimit:     -1,
 		disabledKinds:    make(map[Kind]struct{}),
 		queryCallsite:    true,
 	}

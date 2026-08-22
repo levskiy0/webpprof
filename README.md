@@ -43,8 +43,9 @@ local debugging into an infrastructure project.
 
 - **Request inspection:** method, route, status, duration, headers, bounded
   request and response bodies, raw HTTP, and ready-to-run cURL.
-- **SQL query profiling:** SQL text, connection, driver, database, operation,
-  rows, duration, and errors from Bun, `database/sql`, or OpenTelemetry spans.
+- **SQL query profiling:** SQL text, Go callsite, optional plain EXPLAIN, Go
+  replay skeleton, connection, driver, database, rows, duration, and errors
+  from Bun, `database/sql`, or OpenTelemetry spans.
 - **Request correlation:** related middleware, queries, cache operations, jobs,
   logs, mail, outgoing HTTP calls, schedules, exceptions, and custom events.
 - **Waterfall timeline:** inspect proportional Gantt bars on one request-wide
@@ -245,6 +246,65 @@ profiler := webpprof.New(
     webpprof.WithStoragePath("./var/webpprof/events.jsonl"),
 )
 ```
+
+### Selective request capture
+
+Cheap rules that only need the incoming `*http.Request` run before capture
+starts. Rules that depend on the response status, elapsed time, or request tags
+run after the handler completes. Related queries, cache operations, jobs, mail,
+logs, HTTP calls, exceptions, schedules, and custom events are buffered with the
+request; if a completed-request rule rejects it, the entire buffered tree is
+discarded.
+
+```go
+profiler := webpprof.New(
+    mux,
+
+    // Early rules: inspect the incoming request before anything is recorded.
+    webpprof.WithRequestSampleRate(0.25), // Randomly consider about 25%.
+    webpprof.WithNextRequests(20),        // Consider only the next 20 requests.
+    webpprof.WithBrowserSession("developer-a"),
+
+    // Completed-request rules: all of these conditions must match.
+    webpprof.WithHTTPStatusAtLeast(500),
+    webpprof.WithMinRequestDuration(500*time.Millisecond),
+    webpprof.WithRequestTags(map[string]string{"tenant": "acme"}),
+)
+```
+
+Different options are combined with **AND**. Values passed to one option are
+combined with **OR**, so this records exactly the listed response codes:
+
+```go
+webpprof.WithHTTPStatusCodes(200, 301, 500, 502, 503)
+```
+
+Use `WithRequestFilter` for an early predicate over `*http.Request`, or
+`WithRequestRetentionFilter` when the decision needs the completed profiler
+entity:
+
+```go
+webpprof.WithRequestFilter(func(r *http.Request) bool {
+    return strings.HasPrefix(r.URL.Path, "/api/")
+})
+
+webpprof.WithRequestRetentionFilter(func(r webpprof.Request) bool {
+    return r.Status >= 500 || r.Duration >= 500*time.Millisecond
+})
+```
+
+`WithBrowserSession("developer-a")` accepts the marker from either the
+`X-Webpprof-Session` header or the `webpprof_capture` cookie. For a browser,
+set it from the developer console before reproducing the issue:
+
+```js
+document.cookie = "webpprof_capture=developer-a; Path=/; SameSite=Lax"
+```
+
+The marker selects capture traffic; it is not authentication and does not
+replace `WithToken`. `WithNextRequests` counts candidates after exclusions,
+early filters, browser-session matching, and random sampling. A candidate still
+uses one slot when a completed-request rule later rejects it.
 
 `WithStoragePath` is optional. It uses an owner-only append journal, replays it
 on restart, applies the same retention and size limits, and compacts it
@@ -475,7 +535,7 @@ capture.Finish(webpprof.RequestResult{Status: http.StatusOK})
 | --- | --- | --- | --- |
 | HTTP request | `LogRequest` | `http`, `gin` | Scheme, method, real path, route, headers, bodies, status, sizes, duration, error |
 | Middleware | `LogMiddlewareContext` | `http`, `gin` (`ProfileMiddlewareWith`) | Name, state, inclusive duration, error |
-| SQL query | `LogQueryContext`, `StartQuery` | `bun`, `sql`, `otel` | Connection, driver, database, operation, SQL, rows, duration, error |
+| SQL query | `LogQueryContext`, `StartQuery` | `bun`, `sql`, `otel` | Connection, driver, database, operation, SQL, rows, duration, callsite, optional EXPLAIN, error |
 | Cache | `LogCacheContext` | `gocache`, `goredis` | Store, operation, key, hit, TTL, duration, error |
 | Job | `LogJobContext` | `goqueue` (`JobContext`/`ChainContext` for related dispatches) | Name, queue, connection, state, attempts, duration, error |
 | Log | `LogLogContext` | `slog`, `zap` | Level, message, structured fields, stack |
@@ -546,7 +606,7 @@ Package-level functions are safe no-ops before a default profiler is configured.
 | Entity | Logging API | Primary fields | Useful optional fields |
 | --- | --- | --- | --- |
 | `Request` | `LogRequest`; normally `webpprofhttp.MiddlewareWith` or `BeginRequest` / `Finish` | `Method`, `Path`, `Status` | `Scheme`, `Route`, `Query`, sizes, `Request`, `Response`, `Error` |
-| `Query` | `LogQuery`, `LogQueryContext`, `StartQuery` | `SQL` | `Connection`, `Driver`, `Database`, `Operation`, `RowsAffected`, `Error` |
+| `Query` | `LogQuery`, `LogQueryContext`, `StartQuery` | `SQL` | `Connection`, `Driver`, `Database`, `Operation`, `RowsAffected`, `Callsite`, `Plan`, `Error` |
 | `Email` | `LogEmail`, `LogEmailContext` | `From`, `To`, `Subject` | `Transport`, `CC`, `BCC`, `Text`, `HTML`, `Status`, `Error` |
 | `Cache` | `LogCache`, `LogCacheContext` | `Operation`, `Key`, `Hit` | `Store`, `TTL`, `Size`, `Value`, `Truncated`, `Error` |
 | `Job` | `LogJob`, `LogJobContext` | `Name`, `State` | `Queue`, `Connection`, attempts, `AvailableAt`, `Wait`, `Arguments`, `Error` |
@@ -566,6 +626,8 @@ Nested values have their own small contracts:
 | `HTTPMessage` | `Headers`, `ContentType`, `Body`, original byte `Size`, and `Truncated` when only part of the body is stored. |
 | `Address` | Optional display `Name` and the primary `Email` value. Used by `Email.From`, `To`, `CC`, and `BCC`. |
 | `Argument` | Optional `Name`, Go or domain `Type`, rendered `Value`, original byte `Size`, and `Truncated`. Used by `Job.Arguments`. |
+| `SourceFrame` | Go `Function`, absolute or trimpath `File`, `Line`, and an optional editor/source-browser `URL`. Used by `Query.Callsite`. |
+| `QueryPlan` | Plain EXPLAIN `Command`, textual `Format` and `Text`, separate lookup `Duration`, and an EXPLAIN-only `Error`. Used by `Query.Plan`. |
 
 Durations are Go `time.Duration` values and are serialized as nanoseconds (`duration_ns`, `ttl_ns`, and `wait_ns`). `Query.RowsAffected` is a pointer so that an actual zero can be distinguished from an unknown value.
 
@@ -668,6 +730,77 @@ Each profiler is a separate package. Importing the core does not pull every inte
 | `profiler/otel` | `Profile`, `NewSpanProcessor` | OpenTelemetry SDK spans |
 
 Profile dependencies in the composition root and inject the returned value. The application still owns and closes the original dependency. Use one profiler per operation path; combining Bun, SQL driver, and OpenTelemetry instrumentation on the same database records duplicates.
+
+### SQL callsite, EXPLAIN, and replay
+
+Query callsites are captured automatically by the manual API, Bun hook, and
+`database/sql` wrapper. Open a query and use **Callsite** to copy `file:line` or
+open the frame in an editor. Editor links are application-specific; configure
+one when creating the profiler:
+
+```go
+profiler := webpprof.New(
+    mux,
+    webpprof.WithSourceLink(func(frame webpprof.SourceFrame) string {
+        // VS Code deep link. Use your editor's URL format here instead.
+        return fmt.Sprintf("vscode://file/%s:%d", frame.File, frame.Line)
+    }),
+)
+```
+
+Callsite capture is enabled by default. It uses `runtime.Callers`, so applications
+that do not want the per-query allocation or source paths in stored profiler
+data can pass `webpprof.WithQueryCallsite(false)`. Builds made with `-trimpath`
+store trimmed paths; editor links then need to map those paths back to the local
+checkout.
+
+The `database/sql` profiler can capture a real plan on the intercepted raw
+connection. It is deliberately disabled by default:
+
+```go
+profiledConnector := webpprofsql.ProfileConnectorWith(
+    profiler,
+    connector, // the driver's original driver.Connector
+    webpprofsql.Config{
+        Connection:     "primary",
+        Driver:         "postgresql", // postgresql/pgx, sqlite/sqlite3, mysql/mariadb
+        Database:       "app",
+        Explain:        true,
+        ExplainTimeout: 500 * time.Millisecond,
+        ExplainMaxRows: 100,
+    },
+)
+db := sql.OpenDB(profiledConnector)
+```
+
+Only a single `SELECT` statement is eligible. webpprof issues a plain
+driver-specific `EXPLAIN`, never `EXPLAIN ANALYZE`, before the real query and
+stores its duration separately from the query duration. Plan failures never
+replace `Query.Error` or change the original database result. Use EXPLAIN only
+with development/read-only credentials: plans can expose schema, index, and
+predicate details.
+
+Custom integrations can populate the same contract directly:
+
+```go
+webpprof.LogQueryContext(ctx, webpprof.Query{
+    SQL: "SELECT id FROM players WHERE id = ?",
+    Callsite: []webpprof.SourceFrame{{
+        Function: "players.(*Repository).Find",
+        File:     "/workspace/players/repository.go",
+        Line:     42,
+    }},
+    Plan: &webpprof.QueryPlan{
+        Command: "EXPLAIN SELECT id FROM players WHERE id = ?",
+        Format:  "text",
+        Text:    "Index Scan using players_pkey on players ...",
+    },
+})
+```
+
+The **Go replay** card is generated in the browser from the captured SQL.
+Bind arguments are never persisted; placeholder values remain an explicit
+`TODO`, which avoids leaking credentials or personal data into profiler storage.
 
 ## Writing a profiler
 

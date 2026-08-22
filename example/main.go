@@ -34,6 +34,11 @@ func main() {
 		mux,
 		webpprof.WithRetention(time.Hour),
 		webpprof.WithExcludedRequests("GET /favicon.ico"),
+		// Make every captured SQL frame open directly in VS Code. Replace this
+		// URL builder with the deep-link format used by your editor.
+		webpprof.WithSourceLink(func(frame webpprof.SourceFrame) string {
+			return fmt.Sprintf("vscode://file/%s:%d", frame.File, frame.Line)
+		}),
 		// Dashboard replaces the default layout. Widgets are rendered in the
 		// declared order on a responsive four-column grid.
 		webpprof.Dashboard(
@@ -202,6 +207,14 @@ func (a *demoApp) demo(w http.ResponseWriter, r *http.Request) {
 		Operation:    "SELECT",
 		SQL:          playerLookupSQL,
 		RowsAffected: &rows,
+		// Automatic SQL integrations populate this with a real plain EXPLAIN.
+		// The database-free demo supplies a representative SQLite plan.
+		Plan: &webpprof.QueryPlan{
+			Command:  "EXPLAIN QUERY PLAN " + playerLookupSQL,
+			Format:   "text",
+			Text:     "id=2  parent=0  notused=0  detail=SEARCH players USING INTEGER PRIMARY KEY (rowid=?)",
+			Duration: 900 * time.Microsecond,
+		},
 	})
 	a.profiler.LogCacheContext(ctx, webpprof.Cache{
 		Meta:      webpprof.Meta{StartedAt: startedAt.Add(13 * time.Millisecond), Duration: 800 * time.Microsecond},
