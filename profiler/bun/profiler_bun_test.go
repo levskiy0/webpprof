@@ -61,4 +61,8 @@ func TestProfileBunRecordsAvailableQueryMetadata(t *testing.T) {
 	if rows, ok := update["rows_affected"]; !ok || rows != float64(0) {
 		t.Fatalf("rows affected = %#v, present = %v", rows, ok)
 	}
+	callsite, ok := update["callsite"].([]any)
+	if !ok || len(callsite) == 0 {
+		t.Fatalf("callsite = %#v", update["callsite"])
+	}
 }

@@ -26,6 +26,9 @@ func TestProfileRegistersOneProcessorAndMapsQuery(t *testing.T) {
 		attribute.String("db.namespace", "app"),
 		attribute.String("db.operation.name", "SELECT"),
 		attribute.String("db.query.text", "select id from players"),
+		attribute.String("code.file.path", "/srv/app/repository/player.go"),
+		attribute.String("code.function.name", "repository.(*Players).Find"),
+		attribute.Int("code.line.number", 42),
 	))
 	span.End()
 	recorder := httptest.NewRecorder()
@@ -45,5 +48,8 @@ func TestProfileRegistersOneProcessorAndMapsQuery(t *testing.T) {
 	}
 	if query.Driver != "postgresql" || query.Database != "app" || query.Operation != "SELECT" {
 		t.Fatalf("query = %+v", query)
+	}
+	if len(query.Callsite) != 1 || query.Callsite[0].File != "/srv/app/repository/player.go" || query.Callsite[0].Line != 42 {
+		t.Fatalf("callsite = %+v", query.Callsite)
 	}
 }
