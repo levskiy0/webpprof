@@ -22,6 +22,7 @@ func BeginRequest(request Request) *RequestCapture {
 	if request.StartedAt.IsZero() {
 		request.StartedAt = time.Now().UTC()
 	}
+	request.Tags = cloneTags(request.Tags)
 	return &RequestCapture{request: request}
 }
 
@@ -56,31 +57,74 @@ func (c *RequestCapture) ID() string {
 }
 
 func (c *RequestCapture) LogQuery(query Query) {
-	c.append(func(request *Request) { request.Queries = append(request.Queries, query) })
+	c.append(func(request *Request) {
+		query.Tags = mergeTags(request.Tags, query.Tags)
+		request.Queries = append(request.Queries, query)
+	})
 }
 func (c *RequestCapture) LogEmail(email Email) {
-	c.append(func(request *Request) { request.Emails = append(request.Emails, email) })
+	c.append(func(request *Request) {
+		email.Tags = mergeTags(request.Tags, email.Tags)
+		request.Emails = append(request.Emails, email)
+	})
 }
 func (c *RequestCapture) LogCache(cache Cache) {
-	c.append(func(request *Request) { request.Cache = append(request.Cache, cache) })
+	c.append(func(request *Request) {
+		cache.Tags = mergeTags(request.Tags, cache.Tags)
+		request.Cache = append(request.Cache, cache)
+	})
 }
 func (c *RequestCapture) LogJob(job Job) {
-	c.append(func(request *Request) { request.Jobs = append(request.Jobs, job) })
+	c.append(func(request *Request) {
+		job.Tags = mergeTags(request.Tags, job.Tags)
+		request.Jobs = append(request.Jobs, job)
+	})
 }
 func (c *RequestCapture) LogLog(log Log) {
-	c.append(func(request *Request) { request.Logs = append(request.Logs, log) })
+	c.append(func(request *Request) {
+		log.Tags = mergeTags(request.Tags, log.Tags)
+		request.Logs = append(request.Logs, log)
+	})
 }
 func (c *RequestCapture) LogHTTPCall(call HTTPCall) {
-	c.append(func(request *Request) { request.HTTPCalls = append(request.HTTPCalls, call) })
+	c.append(func(request *Request) {
+		call.Tags = mergeTags(request.Tags, call.Tags)
+		request.HTTPCalls = append(request.HTTPCalls, call)
+	})
 }
 func (c *RequestCapture) LogSchedule(schedule Schedule) {
-	c.append(func(request *Request) { request.Schedules = append(request.Schedules, schedule) })
+	c.append(func(request *Request) {
+		schedule.Tags = mergeTags(request.Tags, schedule.Tags)
+		request.Schedules = append(request.Schedules, schedule)
+	})
 }
 func (c *RequestCapture) LogException(exception Exception) {
-	c.append(func(request *Request) { request.Exceptions = append(request.Exceptions, exception) })
+	c.append(func(request *Request) {
+		exception.Tags = mergeTags(request.Tags, exception.Tags)
+		request.Exceptions = append(request.Exceptions, exception)
+	})
 }
 func (c *RequestCapture) LogEvent(event Event) {
-	c.append(func(request *Request) { request.Events = append(request.Events, event) })
+	c.append(func(request *Request) {
+		event.Tags = mergeTags(request.Tags, event.Tags)
+		request.Events = append(request.Events, event)
+	})
+}
+
+// LogMiddleware buffers middleware under this request capture.
+func (c *RequestCapture) LogMiddleware(middleware Middleware) {
+	c.append(func(request *Request) {
+		middleware.Tags = mergeTags(request.Tags, middleware.Tags)
+		request.Middlewares = append(request.Middlewares, middleware)
+	})
+}
+
+// AddTags adds or replaces tags on the captured request.
+func (c *RequestCapture) AddTags(tags map[string]string) {
+	if len(tags) == 0 {
+		return
+	}
+	c.append(func(request *Request) { request.Tags = mergeTags(request.Tags, tags) })
 }
 
 func (c *RequestCapture) Finish(result RequestResult) {

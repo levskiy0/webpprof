@@ -8,6 +8,7 @@ import (
 	stdlibhttp "net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/levskiy0/webpprof"
 )
@@ -38,9 +39,11 @@ func MiddlewareWith(p *webpprof.Profiler, next stdlibhttp.Handler) stdlibhttp.Ha
 		}
 		requestMessage := SnapshotRequest(r, p.BodyLimit())
 		capture := p.BeginRequest(webpprof.Request{
+			Meta:        webpprof.Meta{Tags: webpprof.TagsFromContext(r.Context())},
 			Method:      r.Method,
 			Path:        r.URL.Path,
 			Query:       sanitizeQuery(r.URL.RawQuery),
+			Scheme:      RequestScheme(r),
 			Protocol:    r.Proto,
 			Host:        r.Host,
 			RemoteIP:    remoteIP(r.RemoteAddr),
@@ -51,6 +54,7 @@ func MiddlewareWith(p *webpprof.Profiler, next stdlibhttp.Handler) stdlibhttp.Ha
 		r = r.WithContext(webpprof.WithRequest(r.Context(), capture))
 		defer func() {
 			if recovered := recover(); recovered != nil {
+				p.LogExceptionContext(r.Context(), webpprof.PanicException(recovered))
 				capture.Finish(webpprof.RequestResult{Status: stdlibhttp.StatusInternalServerError, ResponseSize: observer.size, Response: observer.body.Message(observer.Header(), observer.size), Error: fmt.Sprint(recovered)})
 				panic(recovered)
 			}
@@ -62,6 +66,48 @@ func MiddlewareWith(p *webpprof.Profiler, next stdlibhttp.Handler) stdlibhttp.Ha
 		}()
 		next.ServeHTTP(observer, r)
 	})
+}
+
+// ProfileMiddleware wraps a standard HTTP middleware and records each
+// invocation by name. The recorded duration is inclusive of downstream work.
+func ProfileMiddleware(name string, middleware func(stdlibhttp.Handler) stdlibhttp.Handler) func(stdlibhttp.Handler) stdlibhttp.Handler {
+	return ProfileMiddlewareWith(webpprof.Default(), name, middleware)
+}
+
+// ProfileMiddlewareWith is ProfileMiddleware using an explicit profiler.
+// Place MiddlewareWith outside the returned middleware chain so the invocation
+// can be correlated with the captured request.
+func ProfileMiddlewareWith(p *webpprof.Profiler, name string, middleware func(stdlibhttp.Handler) stdlibhttp.Handler) func(stdlibhttp.Handler) stdlibhttp.Handler {
+	if middleware == nil {
+		panic("webpprof: nil HTTP middleware")
+	}
+	if p == nil {
+		return middleware
+	}
+	return func(next stdlibhttp.Handler) stdlibhttp.Handler {
+		wrapped := middleware(next)
+		if wrapped == nil {
+			panic("webpprof: HTTP middleware returned a nil handler")
+		}
+		return stdlibhttp.HandlerFunc(func(w stdlibhttp.ResponseWriter, r *stdlibhttp.Request) {
+			invocation := webpprof.Middleware{
+				Meta:  webpprof.Meta{StartedAt: time.Now().UTC()},
+				Name:  name,
+				State: "completed",
+			}
+			defer func() {
+				invocation.Duration = time.Since(invocation.StartedAt)
+				if recovered := recover(); recovered != nil {
+					invocation.State = "panicked"
+					invocation.Error = fmt.Sprint(recovered)
+					p.LogMiddlewareContext(r.Context(), invocation)
+					panic(recovered)
+				}
+				p.LogMiddlewareContext(r.Context(), invocation)
+			}()
+			wrapped.ServeHTTP(w, r)
+		})
+	}
 }
 
 func (w *responseObserver) WriteHeader(status int) {
@@ -132,6 +178,25 @@ func sanitizeQuery(raw string) string {
 
 func SanitizeQuery(raw string) string {
 	return sanitizeQuery(raw)
+}
+
+// RequestScheme returns the original HTTP scheme when it can be determined.
+// It accepts a valid X-Forwarded-Proto value for applications behind a reverse
+// proxy and otherwise falls back to the request TLS state.
+func RequestScheme(request *stdlibhttp.Request) string {
+	if request == nil {
+		return "http"
+	}
+	for _, candidate := range []string{request.URL.Scheme, strings.Split(request.Header.Get("X-Forwarded-Proto"), ",")[0]} {
+		scheme := strings.ToLower(strings.TrimSpace(candidate))
+		if scheme == "http" || scheme == "https" {
+			return scheme
+		}
+	}
+	if request.TLS != nil {
+		return "https"
+	}
+	return "http"
 }
 
 func remoteIP(address string) string {

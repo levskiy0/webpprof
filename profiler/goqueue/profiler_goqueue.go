@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/levskiy0/webpprof"
 	queuecontract "github.com/levskiy0/go-queue/contract"
+	"github.com/levskiy0/webpprof"
 )
 
 type ProfilerGoQueue struct {
@@ -36,6 +36,7 @@ type profiledQueueJob struct {
 type profiledQueueTask struct {
 	inner       Task
 	profiler    *webpprof.Profiler
+	ctx         context.Context
 	jobs        []*profiledQueueJob
 	arguments   [][]webpprof.Argument
 	availableAt time.Time
@@ -110,6 +111,26 @@ func ProfileJobs(jobs []Job, queue string) []Job {
 
 func ProfileJobsWith(profiler *webpprof.Profiler, jobs []Job, queue string) []Job {
 	return webpprof.ProfileWith(profiler, jobs, ProfilerJobs{Queue: queue})
+}
+
+// JobContext creates a task whose dispatch event is correlated with the
+// request capture stored in ctx. The underlying go-queue Task API does not
+// accept a context, so request handlers should use this helper instead of
+// queue.Job when dispatches need to appear in the request details.
+func JobContext(ctx context.Context, queue Queue, job Job, args []queuecontract.Arg) Task {
+	return taskWithContext(ctx, queue.Job(job, args))
+}
+
+// ChainContext is the context-aware counterpart of queue.Chain.
+func ChainContext(ctx context.Context, queue Queue, jobs []queuecontract.Jobs) Task {
+	return taskWithContext(ctx, queue.Chain(jobs))
+}
+
+func taskWithContext(ctx context.Context, task Task) Task {
+	if profiled, ok := task.(*profiledQueueTask); ok {
+		profiled.ctx = ctx
+	}
+	return task
 }
 
 func (q *profiledQueue) Worker(args ...queuecontract.Args) queuecontract.Worker {
@@ -237,7 +258,7 @@ func (t *profiledQueueTask) dispatch(state string, dispatch func() error) error 
 			event.State = "dispatch_failed"
 			event.Error = err.Error()
 		}
-		t.profiler.LogJob(event)
+		t.profiler.LogJobContext(t.ctx, event)
 	}
 	return err
 }

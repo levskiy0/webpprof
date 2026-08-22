@@ -2,6 +2,7 @@ package webpprof
 
 import (
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -75,7 +76,7 @@ func (s *entryStore) put(entry Entry) bool {
 	return true
 }
 
-func (s *entryStore) list(kind Kind, requestID string, after uint64, limit int) []Entry {
+func (s *entryStore) list(kind Kind, requestID string, tags []string, after uint64, limit int) []Entry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.purgeExpiredLocked(time.Now())
@@ -94,10 +95,32 @@ func (s *entryStore) list(kind Kind, requestID string, after uint64, limit int) 
 		if requestID != "" && entry.RequestID != requestID && entry.ID != requestID && entry.OriginRequestID != requestID {
 			continue
 		}
+		if !matchesTags(entry.Tags, tags) {
+			continue
+		}
 		result = append(result, cloneEntry(entry))
 	}
 	slices.Reverse(result)
 	return result
+}
+
+func matchesTags(tags map[string]string, filters []string) bool {
+	for _, filter := range filters {
+		filter = strings.TrimSpace(filter)
+		if filter == "" {
+			continue
+		}
+		key, value, exact := strings.Cut(filter, "=")
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return false
+		}
+		actual, exists := tags[key]
+		if !exists || exact && actual != strings.TrimSpace(value) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *entryStore) get(id string) (Entry, bool) {

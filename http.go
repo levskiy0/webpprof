@@ -107,9 +107,10 @@ func (p *Profiler) authorize(next http.Handler) http.Handler {
 func (p *Profiler) listEvents(w http.ResponseWriter, r *http.Request) {
 	kind := Kind(r.URL.Query().Get("kind"))
 	requestID := r.URL.Query().Get("request_id")
+	tags := r.URL.Query()["tag"]
 	after, _ := strconv.ParseUint(r.URL.Query().Get("after"), 10, 64)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	writeJSON(w, http.StatusOK, map[string]any{"events": p.store.list(kind, requestID, after, limit), "stats": p.store.stats()})
+	writeJSON(w, http.StatusOK, map[string]any{"events": p.store.list(kind, requestID, tags, after, limit), "stats": p.store.stats()})
 }
 
 func (p *Profiler) getEvent(w http.ResponseWriter, r *http.Request) {

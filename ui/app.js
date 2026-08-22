@@ -1,10 +1,10 @@
-const state={events:new Map(),kind:"request",selected:"",requestTab:"payload",responseTab:"response",relatedTab:"query",screen:"dashboard",paused:false,pending:[],socket:null,reconnect:0,reconnectTimer:0,socketStableTimer:0,runtime:[],queueStats:{sources:[]}};
-const kinds=["request","query","cache","job","email","log","http_call","schedule","exception","event",""];
+const state={events:new Map(),kind:"request",selected:"",requestTab:"payload",responseTab:"response",relatedTab:"query",screen:"dashboard",paused:false,pending:[],socket:null,reconnect:0,reconnectTimer:0,socketStableTimer:0,runtime:[],queueStats:{sources:[]},watchedTags:new Set()};
+const kinds=["request","middleware","query","cache","job","email","log","http_call","schedule","exception","event",""];
 const navItems=["dashboard",...kinds];
 const methodFilterKinds=new Set(["request","http_call"]);
-const durationFilterKinds=new Set(["request","query","job","http_call"]);
+const durationFilterKinds=new Set(["request","middleware","query","job","http_call"]);
 const sqlKeywords=new Set("ADD ALL ALTER ANALYZE AND AS ASC BETWEEN BY CASE CHECK COLUMN CONSTRAINT CREATE CROSS CURRENT_DATE CURRENT_TIME CURRENT_TIMESTAMP DATABASE DEFAULT DELETE DESC DISTINCT DROP ELSE END EXISTS EXPLAIN FALSE FOREIGN FROM FULL GROUP HAVING IN INDEX INNER INSERT INTERSECT INTO IS JOIN KEY LEFT LIKE LIMIT NATURAL NOT NULL OFFSET ON OR ORDER OUTER PRIMARY REFERENCES RETURNING RIGHT SELECT SET TABLE THEN TRUE UNION UNIQUE UPDATE USING VALUES WHEN WHERE WITH".split(" "));
-const ids=["login","workspace","login-form","login-error","token","socket-status","event-count","pause","clear","kinds","search","method-filter","method","level-filter","level","duration-filter","duration","events","empty","detail","dashboard-screen","index-screen","detail-screen","screen-title","back"];
+const ids=["login","workspace","login-form","login-error","token","socket-status","event-count","pause","clear","tag-watcher","tag-watch-count","tag-watch-clear","tag-watch-search","tag-watch-selected","tag-watch-results-count","tag-watch-options","kinds","search","method-filter","method","status-filter","status","level-filter","level","duration-filter","duration","list-heading","events","empty","detail","dashboard-screen","index-screen","detail-screen","screen-title","back"];
 const elements=Object.fromEntries(ids.map(id=>[id,document.getElementById(id)]));
 const base=()=>location.pathname.replace(/\/$/,"");
 
@@ -22,6 +22,7 @@ async function load(){
     for(const event of result.events)state.events.set(event.id,event);
     restoreLocation();
     showWorkspace();
+    renderTagWatcher();
     renderKinds();
     render();
     connect();
@@ -36,8 +37,30 @@ function bind(){
   elements.clear.addEventListener("click",clearEvents);
   elements.search.addEventListener("input",render);
   elements.method.addEventListener("change",render);
+  elements.status.addEventListener("change",render);
   elements.level.addEventListener("change",render);
   elements.duration.addEventListener("change",render);
+  elements["tag-watch-search"].addEventListener("input",renderTagWatcher);
+  elements["tag-watcher"].addEventListener("toggle",()=>{
+    if(elements["tag-watcher"].open)elements["tag-watch-search"].focus();
+  });
+  elements["tag-watch-options"].addEventListener("change",event=>{
+    const input=event.target.closest("input[data-tag]");
+    if(!input)return;
+    if(input.checked)state.watchedTags.add(input.dataset.tag);
+    else state.watchedTags.delete(input.dataset.tag);
+    applyWatchedTags();
+  });
+  elements["tag-watch-clear"].addEventListener("click",()=>{
+    state.watchedTags.clear();
+    applyWatchedTags();
+  });
+  elements["tag-watch-selected"].addEventListener("click",event=>{
+    const button=event.target.closest("[data-remove-tag]");
+    if(!button)return;
+    state.watchedTags.delete(button.dataset.removeTag);
+    applyWatchedTags();
+  });
   elements.back.addEventListener("click",showIndex);
   elements["dashboard-screen"].addEventListener("click",event=>{
     const target=event.target.closest("[data-event-id]");
@@ -50,16 +73,24 @@ function bind(){
     openDetail(row.dataset.id);
   });
   elements.detail.addEventListener("click",event=>{
+    const tag=event.target.closest("[data-watch-tag]");
+    if(tag){
+      state.watchedTags.add(tag.dataset.watchTag);
+      applyWatchedTags();
+      return;
+    }
+    const requestCopy=event.target.closest("[data-copy-request]");
+    if(requestCopy){
+      const request=state.events.get(state.selected);
+      const format=requestCopy.dataset.copyRequest;
+      copyText(requestRepresentation(request,format)).then(()=>showCopied(requestCopy,`Copy ${requestFormatLabel(format)}`)).catch(()=>requestCopy.setAttribute("aria-label","Could not copy request"));
+      return;
+    }
     const copy=event.target.closest("[data-copy-query]");
     if(copy){
       const query=state.events.get(state.selected);
       copyText(query?.data?.sql||"").then(()=>{
-        copy.classList.add("copied");
-        copy.setAttribute("aria-label","SQL copied");
-        window.setTimeout(()=>{
-          copy.classList.remove("copied");
-          copy.setAttribute("aria-label","Copy SQL");
-        },1200);
+        showCopied(copy,"Copy SQL");
       }).catch(()=>copy.setAttribute("aria-label","Could not copy SQL"));
       return;
     }
@@ -171,6 +202,7 @@ function connect(){
     if(update.type==="events.cleared"){
       state.events.clear();
       state.selected="";
+      renderTagWatcher();
       renderKinds();
       render();
     }
@@ -247,6 +279,7 @@ function receive(event){
     return;
   }
   state.events.set(event.id,event);
+  renderTagWatcher();
   scheduleRender();
 }
 
@@ -257,7 +290,7 @@ function scheduleRender(){
   frame=requestAnimationFrame(()=>{
     frame=0;
     renderKinds();
-    elements["event-count"].textContent=`${state.events.size} events`;
+    updateEventCount();
     if(state.screen==="index")render();
     if(state.screen==="dashboard")updateDashboard();
   });
@@ -269,6 +302,7 @@ function togglePause(){
   if(!state.paused){
     for(const event of state.pending)state.events.set(event.id,event);
     state.pending=[];
+    renderTagWatcher();
     renderKinds();
     render();
   }
@@ -287,6 +321,7 @@ async function clearEvents(){
   await api("/api/events",{method:"DELETE"});
   state.events.clear();
   state.selected="";
+  renderTagWatcher();
   renderKinds();
   render();
 }
@@ -294,23 +329,89 @@ async function clearEvents(){
 function filtered(){
   const search=elements.search.value.trim().toLowerCase();
   const method=elements.method.value;
+  const status=elements.status.value;
   const level=elements.level.value;
   const minimum=durationFilterKinds.has(state.kind)?Number(elements.duration.value)*1000000:0;
-  return[...state.events.values()].filter(event=>(!state.kind||event.kind===state.kind)&&eventDuration(event)>=minimum&&matchesContextFilters(event,method,level)&&(!search||`${event.kind} ${JSON.stringify(event.data)}`.toLowerCase().includes(search))).sort((a,b)=>b.cursor-a.cursor);
+  return visibleEvents().filter(event=>(!state.kind||event.kind===state.kind)&&eventDuration(event)>=minimum&&matchesContextFilters(event,method,status,level)&&(!search||`${event.kind} ${JSON.stringify(event.data)}`.toLowerCase().includes(search))).sort((a,b)=>b.cursor-a.cursor);
 }
 
-function matchesContextFilters(event,method,level){
+function visibleEvents(){
+  return[...state.events.values()].filter(matchesWatchedTags);
+}
+
+function matchesWatchedTags(event){
+  if(!state.watchedTags.size)return true;
+  const tags=event.tags||{};
+  for(const token of state.watchedTags){
+    const separator=token.indexOf("=");
+    const key=separator<0?token:token.slice(0,separator);
+    const value=separator<0?null:token.slice(separator+1);
+    if(!Object.prototype.hasOwnProperty.call(tags,key)||value!==null&&String(tags[key])!==value)return false;
+  }
+  return true;
+}
+
+function applyWatchedTags(){
+  if(state.selected&&!matchesWatchedTags(state.events.get(state.selected)||{})){
+    state.selected="";
+    if(state.screen==="detail")state.screen="index";
+  }
+  syncLocation();
+  renderTagWatcher();
+  renderKinds();
+  render();
+}
+
+function renderTagWatcher(){
+  const counts=new Map();
+  for(const event of state.events.values()){
+    for(const [key,value] of Object.entries(event.tags||{})){
+      const token=`${key}=${value}`;
+      counts.set(token,(counts.get(token)||0)+1);
+    }
+  }
+  for(const token of state.watchedTags)if(!counts.has(token))counts.set(token,0);
+  const query=elements["tag-watch-search"].value.trim().toLowerCase();
+  const matches=[...counts].filter(([token])=>!query||token.toLowerCase().includes(query)).sort((left,right)=>{
+    const leftStarts=query&&left[0].toLowerCase().startsWith(query);
+    const rightStarts=query&&right[0].toLowerCase().startsWith(query);
+    return Number(rightStarts)-Number(leftStarts)||right[1]-left[1]||left[0].localeCompare(right[0]);
+  });
+  const tags=matches.slice(0,5);
+  elements["tag-watch-selected"].innerHTML=state.watchedTags.size?[...state.watchedTags].sort().map(token=>`<button type="button" data-remove-tag="${escapeHTML(token)}" title="Stop watching ${escapeHTML(token)}"><span>${escapeHTML(token)}</span><b aria-hidden="true">×</b></button>`).join(""):"";
+  elements["tag-watch-selected"].classList.toggle("hidden",state.watchedTags.size===0);
+  elements["tag-watch-results-count"].textContent=matches.length>5?`5 of ${matches.length}`:String(matches.length);
+  elements["tag-watch-options"].innerHTML=tags.length?tags.map(([token,count])=>`<label><input type="checkbox" data-tag="${escapeHTML(token)}"${state.watchedTags.has(token)?" checked":""}><span>${escapeHTML(token)}</span><b>${count}</b></label>`).join(""):`<p>${query?"No matching tags.":"No tags recorded yet."}</p>`;
+  elements["tag-watch-count"].textContent=state.watchedTags.size;
+  elements["tag-watcher"].classList.toggle("active",state.watchedTags.size>0);
+  elements["tag-watch-clear"].disabled=state.watchedTags.size===0;
+}
+
+function updateEventCount(){
+  const visible=visibleEvents().length;
+  elements["event-count"].textContent=state.watchedTags.size?`${visible}/${state.events.size} events`:`${state.events.size} events`;
+}
+
+function matchesContextFilters(event,method,status,level){
   const data=event.data||{};
   if(method&&methodFilterKinds.has(state.kind)&&String(data.method||"").toUpperCase()!==method)return false;
+  if(status&&state.kind==="request"){
+    const code=Number(data.status)||0;
+    if(status.startsWith("class:")&&Math.floor(code/100)!==Number(status.slice(6)))return false;
+    if(status.startsWith("code:")&&code!==Number(status.slice(5)))return false;
+  }
   if(level&&state.kind==="log"&&normalizedLogLevel(data.level)!==level)return false;
   return true;
 }
 
 function render(){
+  renderRequestStatusOptions();
   const events=state.screen==="index"?filtered():[];
-  elements["event-count"].textContent=`${state.events.size} events`;
+  updateEventCount();
   elements["screen-title"].textContent=kindLabel(state.kind);
+  renderListHeading();
   elements["method-filter"].classList.toggle("hidden",!methodFilterKinds.has(state.kind));
+  elements["status-filter"].classList.toggle("hidden",state.kind!=="request");
   elements["level-filter"].classList.toggle("hidden",state.kind!=="log");
   elements["duration-filter"].classList.toggle("hidden",!durationFilterKinds.has(state.kind));
   elements.empty.classList.toggle("hidden",events.length>0);
@@ -321,6 +422,32 @@ function render(){
   elements["detail-screen"].classList.toggle("hidden",state.screen!=="detail");
   if(state.screen==="dashboard")renderDashboard();
   if(state.screen==="detail")renderDetail(state.events.get(state.selected));
+}
+
+function renderRequestStatusOptions(){
+  const selected=elements.status.value;
+  const counts=new Map();
+  for(const event of visibleEvents()){
+    if(event.kind!=="request")continue;
+    const code=Number((event.data||{}).status)||0;
+    if(code>=100&&code<=599)counts.set(code,(counts.get(code)||0)+1);
+  }
+  if(selected.startsWith("code:")){
+    const code=Number(selected.slice(5));
+    if(code>=100&&code<=599&&!counts.has(code))counts.set(code,0);
+  }
+  const statuses=[...counts].sort((left,right)=>left[0]-right[0]);
+  const signature=JSON.stringify(statuses);
+  if(elements.status.dataset.signature===signature)return;
+  elements.status.dataset.signature=signature;
+  elements.status.innerHTML=`<option value="">All</option><optgroup label="Status class"><option value="class:2">2xx · Success</option><option value="class:3">3xx · Redirect</option><option value="class:4">4xx · Client error</option><option value="class:5">5xx · Server error</option></optgroup>${statuses.length?`<optgroup label="Recorded codes">${statuses.map(([code,count])=>`<option value="code:${code}">${code} · ${count}</option>`).join("")}</optgroup>`:""}`;
+  elements.status.value=selected;
+}
+
+function renderListHeading(){
+  const layout=listLayout(state.kind);
+  elements["list-heading"].className=`list-heading${listLayoutClasses(layout)}`;
+  elements["list-heading"].innerHTML=`${layout.badge?`<span>${escapeHTML(layout.badge)}</span>`:""}<span>${escapeHTML(layout.entry)}</span>${layout.status?`<span>${escapeHTML(layout.status)}</span>`:""}${layout.duration?'<span class="list-duration">Duration</span>':""}<span class="list-time">Happened</span><span></span>`;
 }
 
 function renderDashboard(){
@@ -462,14 +589,21 @@ function formatCount(value){
 }
 
 function slowOperationRows(){
-  const operations=[...state.events.values()].filter(event=>["request","query","http_call"].includes(event.kind)).sort((a,b)=>eventDuration(b)-eventDuration(a)).slice(0,6);
-  const rows=operations.map(event=>`<button type="button" class="slow-row" data-event-id="${escapeHTML(event.id)}"><span class="slow-kind">${escapeHTML(event.kind==="request"?(event.data||{}).method||"HTTP":kindLabel(event.kind))}</span><span><strong>${escapeHTML(title(event))}</strong><small>${escapeHTML(relativeTime(event.started_at))}</small></span><b>${escapeHTML(duration(event.duration_ns))}</b><i aria-hidden="true">›</i></button>`).join("");
+  const operations=visibleEvents().filter(event=>["request","query","http_call"].includes(event.kind)).sort((a,b)=>eventDuration(b)-eventDuration(a)).slice(0,6);
+  const rows=operations.map(event=>`<button type="button" class="slow-row" data-event-id="${escapeHTML(event.id)}"><span class="slow-kind">${escapeHTML(kindSingular(event.kind))}</span><span><strong>${escapeHTML(slowOperationTitle(event))}</strong></span><b>${escapeHTML(duration(event.duration_ns))}</b>${rowAction()}</button>`).join("");
   return rows||'<div class="dashboard-panel-empty">No timed operations yet.</div>';
+}
+
+function slowOperationTitle(event){
+  const data=event.data||{};
+  if(event.kind==="request")return requestTarget(data);
+  if(event.kind==="http_call")return data.url||"HTTP call";
+  return compactQuery(data.sql||"");
 }
 
 function recentEvents(kind){
   const cutoff=Date.now()-120000;
-  return[...state.events.values()].filter(event=>event.kind===kind&&Date.parse(event.started_at)>=cutoff);
+  return visibleEvents().filter(event=>event.kind===kind&&Date.parse(event.started_at)>=cutoff);
 }
 
 function bucketSeries(kind){
@@ -478,7 +612,7 @@ function bucketSeries(kind){
   const end=Math.floor(Date.now()/bucket)*bucket;
   const start=end-(count-1)*bucket;
   const values=new Array(count).fill(0);
-  for(const event of state.events.values()){
+  for(const event of visibleEvents()){
     if(event.kind!==kind)continue;
     const index=Math.floor((Date.parse(event.started_at)-start)/bucket);
     if(index>=0&&index<count)values[index]++;
@@ -493,7 +627,7 @@ function cacheHitSeries(){
   const start=end-(count-1)*bucket;
   const hits=new Array(count).fill(0);
   const totals=new Array(count).fill(0);
-  for(const event of state.events.values()){
+  for(const event of visibleEvents()){
     if(event.kind!=="cache")continue;
     const index=Math.floor((Date.parse(event.started_at)-start)/bucket);
     if(index<0||index>=count)continue;
@@ -581,9 +715,10 @@ function showIndex(){
 
 function restoreLocation(){
   const params=new URLSearchParams(location.search);
+  state.watchedTags=new Set(params.getAll("tag").filter(Boolean));
   const entry=params.get("entry")||"";
   const view=params.get("view")||"dashboard";
-  if(!state.events.has(entry)){
+  if(!state.events.has(entry)||!matchesWatchedTags(state.events.get(entry))){
     state.selected="";
     if(view==="dashboard")state.screen="dashboard";
     else{
@@ -606,6 +741,8 @@ function syncLocation(mode="replace"){
   const url=new URL(location.href);
   url.searchParams.delete("entry");
   url.searchParams.delete("tab");
+  url.searchParams.delete("tag");
+  for(const tag of [...state.watchedTags].sort())url.searchParams.append("tag",tag);
   if(state.screen==="detail"&&state.selected){
     url.searchParams.set("entry",state.selected);
     url.searchParams.set("tab",state.relatedTab);
@@ -619,24 +756,91 @@ function syncLocation(mode="replace"){
 function row(event){
   const button=document.createElement("button");
   const status=statusFor(event);
-  const data=event.data||{};
-  const verb=event.kind==="request"?(data.method||"HTTP"):kindLabel(event.kind);
+  const layout=listLayout(state.kind);
+  const badge=listBadge(event);
   button.type="button";
-  button.className=`event-row${state.selected===event.id?" active":""}`;
+  button.className=`event-row${listLayoutClasses(layout)}${state.selected===event.id?" active":""}`;
   button.dataset.id=event.id;
   button.dataset.kind=event.kind;
-  button.innerHTML=`<span><span class="method method-${escapeHTML(verb.toLowerCase())}">${escapeHTML(verb)}</span></span>${eventPreview(event)}<span class="state ${status.className}">${escapeHTML(status.label)}</span><span class="duration">${duration(event.duration_ns)}</span><span class="event-time">${relativeTime(event.started_at)}</span><span class="row-arrow" aria-hidden="true">›</span>`;
+  button.innerHTML=`${badge?`<span><span class="method${badge.className?` ${escapeHTML(badge.className)}`:""}" title="${escapeHTML(badge.label)}">${escapeHTML(badge.label)}</span></span>`:""}${eventPreview(event)}${layout.status?`<span class="state ${status.className}">${escapeHTML(status.label)}</span>`:""}${layout.duration?`<span class="duration">${duration(event.duration_ns)}</span>`:""}<span class="event-time">${relativeTime(event.started_at)}</span>${rowAction()}`;
   return button;
+}
+
+function listLayout(kind){
+  const layouts={
+    "":{badge:"Type",entry:"Entry",status:"Status",duration:true},
+    request:{badge:"Method",entry:"Path",status:"Status",duration:true},
+    middleware:{badge:"",entry:"Middleware",status:"State",duration:true},
+    query:{badge:"Operation",entry:"Query",status:"Status",duration:true},
+    cache:{badge:"Operation",entry:"Key",status:"Result",duration:true},
+    job:{badge:"Queue",entry:"Job",status:"State",duration:true},
+    email:{badge:"Transport",entry:"Subject",status:"Status",duration:true},
+    log:{badge:"Level",entry:"Message",status:"",duration:false},
+    http_call:{badge:"Method",entry:"URL",status:"Status",duration:true},
+    schedule:{badge:"",entry:"Task",status:"State",duration:true},
+    exception:{badge:"Type",entry:"Message",status:"",duration:false,wideBadge:true},
+    event:{badge:"Kind",entry:"Event",status:"Status",duration:true}
+  };
+  return layouts[kind]||layouts[""];
+}
+
+function listLayoutClasses(layout){
+  return`${layout.badge?"":" without-badge"}${layout.status?"":" without-status"}${layout.duration?"":" without-duration"}${layout.wideBadge?" wide-badge":""}`;
+}
+
+function listBadge(event){
+  const data=event.data||{};
+  if(state.kind==="")return{label:kindSingular(event.kind),className:`method-kind-${event.kind}`};
+  if(methodFilterKinds.has(state.kind)){
+    const method=String(data.method||"HTTP").toUpperCase();
+    return{label:method,className:`method-${method.toLowerCase().replace(/[^a-z0-9_-]/g,"")}`};
+  }
+  if(state.kind==="query"||state.kind==="cache"){
+    const operation=String(data.operation||(state.kind==="query"?"SQL":"CACHE")).toUpperCase();
+    return{label:operation,className:`method-operation method-operation-${badgeToken(operation)}`};
+  }
+  if(state.kind==="job")return{label:data.queue||"default",className:"method-queue"};
+  if(state.kind==="email")return{label:data.transport||"mail",className:"method-transport"};
+  if(state.kind==="log"){
+    const level=normalizedLogLevel(data.level||"log");
+    return{label:level.toUpperCase(),className:`method-level method-level-${badgeToken(level)}`};
+  }
+  if(state.kind==="exception")return{label:data.type||"Exception",className:"method-exception-type"};
+  if(state.kind==="event")return{label:data.kind||"event",className:"method-event-kind"};
+  return null;
+}
+
+function badgeToken(value){
+  return String(value||"").toLowerCase().replace(/[^a-z0-9_-]/g,"");
+}
+
+function kindSingular(kind){
+  const labels={request:"Request",middleware:"Middleware",query:"Query",cache:"Cache",job:"Job",email:"Mail",log:"Log",http_call:"HTTP",schedule:"Schedule",exception:"Exception",event:"Event"};
+  return labels[kind]||kind;
 }
 
 function eventPreview(event){
   const data=event.data||{};
-  if(event.kind==="request")return`<span class="event-main entity-preview"><strong>${escapeHTML(requestTarget(data))}</strong>${data.route&&data.route!==data.path?`<small>${escapeHTML(data.route)}</small>`:""}</span>`;
-  return entityPreview(relationContent(event.kind,event,data),"event-main");
+  if(event.kind==="request")return`<span class="event-main entity-preview"><strong>${escapeHTML(requestTarget(data))}</strong>${inlineTags(event.tags)}</span>`;
+  let content;
+  if(state.kind==="middleware")content={title:data.name||"Middleware",subtitle:"Inclusive timing"};
+  else if(state.kind==="query")content={title:compactQuery(data.sql||""),full:data.sql||"",subtitle:data.connection||data.driver||"default",code:true};
+  else if(state.kind==="cache")content={title:data.key||"Cache operation",subtitle:data.store||"default",code:true};
+  else if(state.kind==="job")content={title:data.name||"Job",subtitle:[data.connection,data.attempt?`attempt ${data.attempt}`:""].filter(Boolean).join(" · ")||"Queued job"};
+  else if(state.kind==="email")content={title:data.subject||"Email",subtitle:(data.to||[]).map(address).join(", ")||"No recipients"};
+  if(state.kind==="log"){
+    const fieldCount=Object.keys(data.fields||{}).length;
+    content={title:data.message||"Log entry",subtitle:fieldCount?`${fieldCount} structured ${plural(fieldCount,"field","fields")}`:"Plain log message"};
+  }
+  else if(state.kind==="http_call")content={title:data.url||"HTTP call",subtitle:data.status?`Status ${data.status}`:"Outgoing request"};
+  else if(state.kind==="schedule")content={title:data.name||"Scheduled task",subtitle:data.payload?"Payload captured":"No payload"};
+  else if(state.kind==="exception")content={title:data.message||"Exception",subtitle:data.stack?"Stack captured":"No stack captured"};
+  else if(state.kind==="event")content={title:data.name||data.summary||"Event",subtitle:data.summary&&data.summary!==data.name?data.summary:"Application event"};
+  return entityPreview(content||relationContent(event.kind,event,data),"event-main",event.tags,false);
 }
 
-function entityPreview(content,className=""){
-  return`<span class="entity-preview ${className}">${content.code?`<code>${escapeHTML(content.title)}</code>`:`<strong>${escapeHTML(content.title)}</strong>`}<small>${escapeHTML(content.subtitle)}</small></span>`;
+function entityPreview(content,className="",tags,showSubtitle=true){
+  return`<span class="entity-preview ${className}">${content.code?`<code>${escapeHTML(content.title)}</code>`:`<strong>${escapeHTML(content.title)}</strong>`}${showSubtitle&&content.subtitle?`<small>${escapeHTML(content.subtitle)}</small>`:""}${inlineTags(tags)}</span>`;
 }
 
 function renderDetail(event){
@@ -672,7 +876,7 @@ function renderDetail(event){
 function groupFor(event){
   const requestID=event.kind==="request"?event.id:event.request_id;
   if(!requestID)return{request:null,events:[event],byKind:new Map([[event.kind,[event]]])};
-  const events=[...state.events.values()].filter(item=>item.id===requestID||item.request_id===requestID).sort((a,b)=>Date.parse(a.started_at)-Date.parse(b.started_at));
+  const events=visibleEvents().filter(item=>item.id===requestID||item.request_id===requestID).sort((a,b)=>Date.parse(a.started_at)-Date.parse(b.started_at));
   const byKind=new Map();
   for(const item of events){
     if(!byKind.has(item.kind))byKind.set(item.kind,[]);
@@ -683,6 +887,7 @@ function groupFor(event){
 
 function relatedDefinitions(group){
   const definitions=[
+    ["middleware","Middleware","middleware"],
     ["query","Queries","query"],
     ["cache","Cache","cache"],
     ["log","Logs","log"],
@@ -718,6 +923,7 @@ function requestDetailsCard(request){
     ["Request size",bytes(data.request_size)],
     ["Response size",bytes(data.response_size)]
   ];
+  if(request.tags&&Object.keys(request.tags).length)facts.push(["Tags",tagList(request.tags),true]);
   return`<section class="detail-section telescope-card"><div class="section-heading"><h3>Request Details</h3><span>${escapeHTML(request.id)}</span></div><dl class="facts">${facts.map(([name,value,html])=>`<dt>${escapeHTML(name)}</dt><dd>${html?value:escapeHTML(value)}</dd>`).join("")}</dl>${data.error?`<div class="danger-block">${escapeHTML(data.error)}</div>`:""}</section>`;
 }
 
@@ -777,7 +983,12 @@ function formatCapturedValue(value){
 
 function tagList(tags){
   if(!tags||!Object.keys(tags).length)return"—";
-  return`<span class="tag-list">${Object.entries(tags).map(([name,value])=>`<span>${escapeHTML(name)}${value?`: ${escapeHTML(value)}`:""}</span>`).join("")}</span>`;
+  return`<span class="tag-list">${Object.entries(tags).map(([name,value])=>{const token=`${name}=${value}`;return`<button type="button" data-watch-tag="${escapeHTML(token)}" title="Watch ${escapeHTML(token)}">${escapeHTML(name)}${value?`: ${escapeHTML(value)}`:""}</button>`}).join("")}</span>`;
+}
+
+function inlineTags(tags){
+  if(!tags||!Object.keys(tags).length)return"";
+  return`<span class="inline-tags">${Object.entries(tags).slice(0,3).map(([name,value])=>`<i>${escapeHTML(name)}${value?`=${escapeHTML(value)}`:""}</i>`).join("")}</span>`;
 }
 
 function requestLink(request){
@@ -786,13 +997,14 @@ function requestLink(request){
 }
 
 function detailTitle(kind){
-  return{job:"Job Details",email:"Mail Details",log:"Log Details",http_call:"HTTP Client Details",schedule:"Schedule Details",exception:"Exception Details",event:"Event Details"}[kind]||`${kindLabel(kind)} Details`;
+  return{middleware:"Middleware Details",job:"Job Details",email:"Mail Details",log:"Log Details",http_call:"HTTP Client Details",schedule:"Schedule Details",exception:"Exception Details",event:"Event Details"}[kind]||`${kindLabel(kind)} Details`;
 }
 
 function entityDetailsCard(event,request){
   const data=event.data||{};
   const status=statusFor(event);
   const facts=[["Time",`${new Date(event.started_at).toLocaleString()} (${relativeTime(event.started_at)})`]];
+  if(event.kind==="middleware")facts.push(["Middleware",data.name||"—"],["State",`<span class="state ${status.className}">${escapeHTML(data.state||status.label)}</span>`,true]);
   if(event.kind==="job")facts.push(["Job",data.name||"—"],["Queue",data.queue||"default"],["Connection",data.connection||"—"],["State",`<span class="state ${status.className}">${escapeHTML(data.state||status.label)}</span>`,true],["Attempt",data.attempt?`${data.attempt}${data.max_attempts?` of ${data.max_attempts}`:""}`:"—"],["Wait",data.wait_ns?duration(data.wait_ns):"—"],["Available at",formatDateTime(data.available_at)]);
   if(event.kind==="email")facts.push(["Transport",data.transport||"—"],["From",address(data.from)||"—"],["To",(data.to||[]).map(address).join(", ")||"—"],["CC",(data.cc||[]).map(address).join(", ")||"—"],["BCC",(data.bcc||[]).map(address).join(", ")||"—"],["Subject",data.subject||"—"],["Status",`<span class="state ${status.className}">${escapeHTML(data.status||status.label)}</span>`,true]);
   if(event.kind==="log")facts.push(["Level",`<span class="state ${status.className}">${escapeHTML((data.level||"log").toUpperCase())}</span>`,true],["Message",data.message||"—"]);
@@ -825,7 +1037,10 @@ function entityContentCards(event){
     cards.push(entityMessageCard("Request",data.request));
     cards.push(entityMessageCard("Response",data.response));
   }
-  if(event.kind==="schedule"&&(data.panic||data.error))cards.push(entityCodeCard(data.panic?"Panic":"Error",data.panic||data.error,"No failure details were captured.",false));
+  if(event.kind==="schedule"){
+    cards.push(entityCodeCard("Payload",data.payload,"No schedule payload was captured."));
+    if(data.panic||data.error)cards.push(entityCodeCard(data.panic?"Panic":"Error",data.panic||data.error,"No failure details were captured.",false));
+  }
   if(event.kind==="exception")cards.push(entityCodeCard("Stack",data.stack,"No stack was captured.",false));
   if(event.kind==="event")cards.push(entityCodeCard("Fields",data.fields,"No event fields were captured."));
   return cards.join("");
@@ -845,9 +1060,13 @@ function entityMessageCard(title,message={}){
 function requestCard(request){
   const data=request.data||{};
   const message=data.request||{};
-  const payload=requestPayload(data,message);
-  const panel=state.requestTab==="headers"?headersPanel(message.headers,"No request headers were captured."):codePanel(payload,message.truncated,"No request payload was captured.");
-  return tabbedCard("Request",[{key:"payload",label:"Payload"},{key:"headers",label:"Headers",count:headerCount(message.headers)}],state.requestTab,panel);
+  let panel;
+  if(state.requestTab==="headers")panel=headersPanel(message.headers,"No request headers were captured.");
+  else if(state.requestTab==="raw")panel=codePanel(rawHTTPRequest(request),message.truncated,"No raw request could be generated.");
+  else if(state.requestTab==="curl")panel=codePanel(curlCommand(request),message.truncated,"No cURL command could be generated.");
+  else panel=codePanel(requestPayload(data,message),message.truncated,"No request payload was captured.");
+  const tabs=[{key:"payload",label:"Payload"},{key:"headers",label:"Headers",count:headerCount(message.headers)},{key:"raw",label:"Raw"},{key:"curl",label:"cURL"}];
+  return tabbedCard("Request",tabs,state.requestTab,panel,requestCopyButton(state.requestTab));
 }
 
 function responseCard(request){
@@ -864,9 +1083,9 @@ function relatedCard(group,event,tabs){
   return tabbedCard("Related",tabs,state.relatedTab,panel);
 }
 
-function tabbedCard(group,tabs,active,panel){
+function tabbedCard(group,tabs,active,panel,action=""){
   const key=group.toLowerCase();
-  return`<section class="detail-section telescope-card"><nav class="card-tabs" aria-label="${escapeHTML(group)} details">${tabs.map(tab=>`<button type="button" data-card-tab="${key}:${tab.key}" class="card-tab${active===tab.key?" active":""}">${escapeHTML(tab.label)}${tab.count===undefined?"":` <span>(${tab.count})</span>`}</button>`).join("")}</nav><div class="card-panel">${panel}</div></section>`;
+  return`<section class="detail-section telescope-card"><nav class="card-tabs" aria-label="${escapeHTML(group)} details">${tabs.map(tab=>`<button type="button" data-card-tab="${key}:${tab.key}" class="card-tab${active===tab.key?" active":""}">${escapeHTML(tab.label)}${tab.count===undefined?"":` <span>(${tab.count})</span>`}</button>`).join("")}${action}</nav><div class="card-panel">${panel}</div></section>`;
 }
 
 function codePanel(value,truncated,emptyMessage){
@@ -920,6 +1139,65 @@ function requestPayload(data,message){
   return JSON.stringify(Object.fromEntries(params.entries()),null,2);
 }
 
+function requestCopyButton(format){
+  const label=requestFormatLabel(format);
+  return`<button type="button" class="copy-button" data-copy-request="${escapeHTML(format)}" aria-label="Copy ${escapeHTML(label)}" title="Copy ${escapeHTML(label)}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 8h9v11H9zM6 16H4V5h9v3"/></svg><span>Copied</span></button>`;
+}
+
+function requestFormatLabel(format){
+  return{payload:"payload",headers:"headers",raw:"raw HTTP",curl:"cURL"}[format]||"request";
+}
+
+function requestRepresentation(request,format){
+  if(!request)return"";
+  const data=request.data||{};
+  const message=data.request||{};
+  if(format==="headers")return requestHeadersText(data,false);
+  if(format==="raw")return rawHTTPRequest(request);
+  if(format==="curl")return curlCommand(request);
+  return requestPayload(data,message);
+}
+
+function requestHeadersText(data,includeHost){
+  const headers=data.request?.headers||{};
+  const lines=[];
+  if(includeHost&&data.host&&!Object.keys(headers).some(name=>name.toLowerCase()==="host"))lines.push(`Host: ${data.host}`);
+  for(const [name,values] of Object.entries(headers).sort(([left],[right])=>left.localeCompare(right))){
+    for(const value of Array.isArray(values)?values:[values])lines.push(`${name}: ${value}`);
+  }
+  return lines.join("\r\n");
+}
+
+function absoluteRequestURL(data){
+  const scheme=data.scheme||"http";
+  const host=data.host||"localhost";
+  const target=requestTarget(data);
+  return`${scheme}://${host}${target.startsWith("/")?"":"/"}${target}`;
+}
+
+function rawHTTPRequest(request){
+  const data=request?.data||{};
+  const message=data.request||{};
+  const head=[`${data.method||"GET"} ${requestTarget(data)} ${data.protocol||"HTTP/1.1"}`,requestHeadersText(data,true)].filter(Boolean).join("\r\n");
+  return message.body?`${head}\r\n\r\n${message.body}`:`${head}\r\n\r\n`;
+}
+
+function curlCommand(request){
+  const data=request?.data||{};
+  const message=data.request||{};
+  const parts=[`curl --request ${shellQuote(data.method||"GET")}`,`--url ${shellQuote(absoluteRequestURL(data))}`];
+  for(const [name,values] of Object.entries(message.headers||{}).sort(([left],[right])=>left.localeCompare(right))){
+    if(["content-length","host"].includes(name.toLowerCase()))continue;
+    for(const value of Array.isArray(values)?values:[values])parts.push(`--header ${shellQuote(`${name}: ${value}`)}`);
+  }
+  if(message.body)parts.push(`--data-raw ${shellQuote(message.body)}`);
+  return parts.join(" \\\n  ");
+}
+
+function shellQuote(value){
+  return`'${String(value).replace(/'/g,`'"'"'`)}'`;
+}
+
 function relatedCollection(kind,events){
   if(!events.length)return'<div class="detail-empty compact"><strong>No related entries</strong></div>';
   const summary=relationSummary(kind,events);
@@ -946,10 +1224,15 @@ function relationRow(kind,event,withStatus){
   const data=event.data||{};
   const status=statusFor(event);
   const content=relationContent(kind,event,data);
-  return`<button type="button" class="relation-row${withStatus?" with-status":""}" data-event-id="${escapeHTML(event.id)}" title="${escapeHTML(content.full||content.title)}">${entityPreview(content,"relation-primary")}${withStatus?`<span class="relation-result"><span class="state ${status.className}">${escapeHTML(status.label)}</span></span>`:""}<span class="relation-duration">${escapeHTML(duration(event.duration_ns))}</span><span class="relation-action" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M10 2.5a7.5 7.5 0 1 0 0 15 7.5 7.5 0 0 0 0-15ZM8.3 6.7l3.6 3.3-3.6 3.3M11.7 10H6.2"/></svg></span></button>`;
+  return`<button type="button" class="relation-row${withStatus?" with-status":""}" data-event-id="${escapeHTML(event.id)}" title="${escapeHTML(content.full||content.title)}">${entityPreview(content,"relation-primary",event.tags)}${withStatus?`<span class="relation-result"><span class="state ${status.className}">${escapeHTML(status.label)}</span></span>`:""}<span class="relation-duration">${escapeHTML(duration(event.duration_ns))}</span>${rowAction()}</button>`;
+}
+
+function rowAction(){
+  return`<span class="relation-action" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M10 2.5a7.5 7.5 0 1 0 0 15 7.5 7.5 0 0 0 0-15ZM8.3 6.7l3.6 3.3-3.6 3.3M11.7 10H6.2"/></svg></span>`;
 }
 
 function relationContent(kind,event,data){
+  if(kind==="middleware")return{title:data.name||"Middleware",subtitle:`${data.state||"completed"} · inclusive timing`};
   if(kind==="query")return{title:compactQuery(data.sql||""),full:data.sql||"",subtitle:[data.operation||"SQL",data.connection||data.driver||"default"].join(" · "),code:true};
   if(kind==="cache")return{title:data.key||"Cache operation",subtitle:[data.operation||"cache",data.store||"default"].join(" · "),code:true};
   if(kind==="log")return{title:data.message||"Log entry",subtitle:(data.level||"log").toUpperCase()};
@@ -1065,20 +1348,30 @@ function copyText(value){
   return copied?Promise.resolve():Promise.reject(new Error("copy failed"));
 }
 
+function showCopied(button,idleLabel){
+  button.classList.add("copied");
+  button.setAttribute("aria-label","Copied");
+  window.setTimeout(()=>{
+    button.classList.remove("copied");
+    button.setAttribute("aria-label",idleLabel);
+  },1200);
+}
+
 function kindCount(kind){
-  if(!kind)return state.events.size;
+  const events=visibleEvents();
+  if(!kind)return events.length;
   let count=0;
-  for(const event of state.events.values())if(event.kind===kind)count++;
+  for(const event of events)if(event.kind===kind)count++;
   return count;
 }
 
 function navIcon(kind){
-  const paths={dashboard:'<path d="M4 13h6v7H4zM14 4h6v16h-6zM4 4h6v5H4z"/>',request:'<path d="M4 5h16v14H4zM8 9h8M8 13h5"/>',query:'<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/>',cache:'<path d="M5 8h14v11H5zM8 5h8v3M9 12h6M9 15h4"/>',job:'<path d="M4 7h16v12H4zM9 7V4h6v3M4 11h16M10 11v2h4v-2"/>',email:'<path d="M3 6h18v13H3zM3 7l9 7 9-7"/>',log:'<path d="M6 3h9l4 4v14H6zM15 3v5h4M9 12h6M9 16h6"/>',http_call:'<path d="M8 12h8M13 8l4 4-4 4M5 5h14v14H5"/>',schedule:'<circle cx="12" cy="13" r="8"/><path d="M12 9v5l3 2M9 3h6"/>',exception:'<path d="M12 3l10 18H2zM12 9v5M12 18h.01"/>',event:'<path d="M12 3l2.2 5.8L20 11l-5.8 2.2L12 19l-2.2-5.8L4 11l5.8-2.2z"/>','':'<path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/>'};
+  const paths={dashboard:'<path d="M4 13h6v7H4zM14 4h6v16h-6zM4 4h6v5H4z"/>',request:'<path d="M4 5h16v14H4zM8 9h8M8 13h5"/>',middleware:'<path d="M5 4h14v5H5zM5 15h14v5H5zM8 9v6M16 9v6"/>',query:'<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/>',cache:'<path d="M5 8h14v11H5zM8 5h8v3M9 12h6M9 15h4"/>',job:'<path d="M4 7h16v12H4zM9 7V4h6v3M4 11h16M10 11v2h4v-2"/>',email:'<path d="M3 6h18v13H3zM3 7l9 7 9-7"/>',log:'<path d="M6 3h9l4 4v14H6zM15 3v5h4M9 12h6M9 16h6"/>',http_call:'<path d="M8 12h8M13 8l4 4-4 4M5 5h14v14H5"/>',schedule:'<circle cx="12" cy="13" r="8"/><path d="M12 9v5l3 2M9 3h6"/>',exception:'<path d="M12 3l10 18H2zM12 9v5M12 18h.01"/>',event:'<path d="M12 3l2.2 5.8L20 11l-5.8 2.2L12 19l-2.2-5.8L4 11l5.8-2.2z"/>','':'<path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/>'};
   return`<svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">${paths[kind]||paths[""]}</svg>`;
 }
 
 function kindLabel(kind){
-  const labels={dashboard:"Dashboard",request:"Requests",query:"Queries",cache:"Cache",job:"Jobs",email:"Mail",log:"Logs",http_call:"HTTP calls",schedule:"Schedules",exception:"Exceptions",event:"Events","":"All events"};
+  const labels={dashboard:"Dashboard",request:"Requests",middleware:"Middleware",query:"Queries",cache:"Cache",job:"Jobs",email:"Mail",log:"Logs",http_call:"HTTP calls",schedule:"Schedules",exception:"Exceptions",event:"Events","":"All events"};
   return labels[kind]||kind;
 }
 
@@ -1090,6 +1383,7 @@ function requestTarget(data){
 function title(event){
   const data=event.data||{};
   if(event.kind==="request")return`${data.method||"HTTP"} ${requestTarget(data)}`;
+  if(event.kind==="middleware")return data.name||"middleware";
   if(event.kind==="query")return`${data.operation||"SQL"} ${short(data.sql||"")}`;
   if(event.kind==="cache")return`${data.operation||"cache"} ${data.key||""}`;
   if(event.kind==="job")return data.name||"job";
@@ -1109,7 +1403,7 @@ function statusFor(event){
   if(["warn","warning"].includes(logLevel)||["warning","retrying","degraded"].includes(textStatus))return{label:data.status||data.level||"Warning",className:"warning"};
   if(data.error||event.kind==="exception"||data.status>=500||["failed","dispatch_failed","panicked"].includes(data.state))return{label:data.status?String(data.status):"Error",className:"error"};
   if(data.status>=400)return{label:String(data.status),className:"error"};
-  if(data.state)return{label:data.state,className:data.state==="succeeded"?"ok":""};
+  if(data.state)return{label:data.state,className:["succeeded","completed"].includes(data.state)?"ok":""};
   if(event.kind==="cache")return{label:data.hit?"Hit":"Miss",className:data.hit?"ok":"warning"};
   return{label:data.status?String(data.status):"OK",className:"ok"};
 }

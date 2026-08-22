@@ -141,40 +141,44 @@ func (p *Profiler) LogRequest(request Request) {
 	}
 	requestID := request.ID
 	for index := range request.Queries {
-		attachRequest(&request.Queries[index].Meta, requestID)
+		attachRequest(&request.Queries[index].Meta, requestID, request.Tags)
 		p.LogQuery(request.Queries[index])
 	}
 	for index := range request.Emails {
-		attachRequest(&request.Emails[index].Meta, requestID)
+		attachRequest(&request.Emails[index].Meta, requestID, request.Tags)
 		p.LogEmail(request.Emails[index])
 	}
 	for index := range request.Cache {
-		attachRequest(&request.Cache[index].Meta, requestID)
+		attachRequest(&request.Cache[index].Meta, requestID, request.Tags)
 		p.LogCache(request.Cache[index])
 	}
 	for index := range request.Jobs {
-		attachRequest(&request.Jobs[index].Meta, requestID)
+		attachRequest(&request.Jobs[index].Meta, requestID, request.Tags)
 		p.LogJob(request.Jobs[index])
 	}
 	for index := range request.Logs {
-		attachRequest(&request.Logs[index].Meta, requestID)
+		attachRequest(&request.Logs[index].Meta, requestID, request.Tags)
 		p.LogLog(request.Logs[index])
 	}
 	for index := range request.HTTPCalls {
-		attachRequest(&request.HTTPCalls[index].Meta, requestID)
+		attachRequest(&request.HTTPCalls[index].Meta, requestID, request.Tags)
 		p.LogHTTPCall(request.HTTPCalls[index])
 	}
 	for index := range request.Schedules {
-		attachRequest(&request.Schedules[index].Meta, requestID)
+		attachRequest(&request.Schedules[index].Meta, requestID, request.Tags)
 		p.LogSchedule(request.Schedules[index])
 	}
 	for index := range request.Exceptions {
-		attachRequest(&request.Exceptions[index].Meta, requestID)
+		attachRequest(&request.Exceptions[index].Meta, requestID, request.Tags)
 		p.LogException(request.Exceptions[index])
 	}
 	for index := range request.Events {
-		attachRequest(&request.Events[index].Meta, requestID)
+		attachRequest(&request.Events[index].Meta, requestID, request.Tags)
 		p.LogEvent(request.Events[index])
+	}
+	for index := range request.Middlewares {
+		attachRequest(&request.Middlewares[index].Meta, requestID, request.Tags)
+		p.LogMiddleware(request.Middlewares[index])
 	}
 	request.Queries = nil
 	request.Emails = nil
@@ -185,6 +189,7 @@ func (p *Profiler) LogRequest(request Request) {
 	request.Schedules = nil
 	request.Exceptions = nil
 	request.Events = nil
+	request.Middlewares = nil
 	request.RequestID = requestID
 	p.record(KindRequest, request.Meta, request)
 }
@@ -201,6 +206,12 @@ func (p *Profiler) LogException(exception Exception) {
 }
 func (p *Profiler) LogEvent(event Event) { p.record(KindEvent, event.Meta, event) }
 
+// LogMiddleware records a standalone or explicitly correlated middleware
+// invocation.
+func (p *Profiler) LogMiddleware(middleware Middleware) {
+	p.record(KindMiddleware, middleware.Meta, middleware)
+}
+
 func LogRequest(request Request)       { withDefault(func(p *Profiler) { p.LogRequest(request) }) }
 func LogQuery(query Query)             { withDefault(func(p *Profiler) { p.LogQuery(query) }) }
 func LogEmail(email Email)             { withDefault(func(p *Profiler) { p.LogEmail(email) }) }
@@ -211,6 +222,11 @@ func LogHTTPCall(call HTTPCall)        { withDefault(func(p *Profiler) { p.LogHT
 func LogSchedule(schedule Schedule)    { withDefault(func(p *Profiler) { p.LogSchedule(schedule) }) }
 func LogException(exception Exception) { withDefault(func(p *Profiler) { p.LogException(exception) }) }
 func LogEvent(event Event)             { withDefault(func(p *Profiler) { p.LogEvent(event) }) }
+
+// LogMiddleware records middleware using the default profiler.
+func LogMiddleware(middleware Middleware) {
+	withDefault(func(p *Profiler) { p.LogMiddleware(middleware) })
+}
 
 func (p *Profiler) record(kind Kind, meta Meta, value any) {
 	if p == nil || p.store == nil {
@@ -235,10 +251,11 @@ func withDefault(log func(*Profiler)) {
 	}
 }
 
-func attachRequest(meta *Meta, requestID string) {
+func attachRequest(meta *Meta, requestID string, tags map[string]string) {
 	if meta.RequestID == "" {
 		meta.RequestID = requestID
 	}
+	meta.Tags = mergeTags(tags, meta.Tags)
 }
 
 func newID() string {

@@ -17,10 +17,24 @@
         <div><h1>webpprof</h1><p>Application Profiler</p></div>
       </div>
       <div class="status-group">
+        <details id="tag-watcher" class="tag-watcher">
+          <summary><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h10l6 6-9 9-7-7zM8 9h.01"/></svg><span>Tags</span><b id="tag-watch-count">0</b></summary>
+          <div class="tag-watch-popover">
+            <header><div><strong>Watch tags</strong><span>All selected tags must match</span></div><button id="tag-watch-clear" type="button">Clear</button></header>
+            <label class="tag-watch-search" for="tag-watch-search"><span aria-hidden="true"></span><input id="tag-watch-search" type="search" autocomplete="off" placeholder="Search tag name or value…" aria-label="Search tags"></label>
+            <div id="tag-watch-selected" class="tag-watch-selected"></div>
+            <div class="tag-watch-results-heading"><span>Matches</span><b id="tag-watch-results-count" aria-live="polite">0</b></div>
+            <div id="tag-watch-options" class="tag-watch-options"></div>
+          </div>
+        </details>
         <span id="socket-status" class="status offline" aria-live="polite">Offline</span>
         <span id="event-count" class="metric" aria-live="polite">0 events</span>
         <button id="pause" class="icon-button" type="button" title="Pause recording" aria-label="Pause recording"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6v12M16 6v12"/></svg><span class="sr-only">Pause recording</span></button>
         <button id="clear" class="icon-button danger" type="button" title="Clear entries" aria-label="Clear entries"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg><span class="sr-only">Clear entries</span></button>
+        <a class="github-link" href="https://github.com/levskiy0/webpprof" target="_blank" rel="noopener noreferrer" title="Open webpprof on GitHub" aria-label="Open webpprof on GitHub">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.87c-2.78.6-3.37-1.18-3.37-1.18-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.53 2.35 1.09 2.92.83.09-.65.35-1.09.64-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.58 9.58 0 0 1 12 6.82c.85 0 1.71.11 2.51.34 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.77c0 .27.18.58.69.48A10 10 0 0 0 12 2Z"/></svg>
+          <span>GitHub</span>
+        </a>
       </div>
     </header>
     <section id="login" class="login hidden">
@@ -45,10 +59,11 @@
               <h2 id="screen-title">Requests</h2>
               <div class="search-wrap"><span aria-hidden="true"></span><input id="search" type="search" aria-label="Search profiler events" placeholder="Search entries…"></div>
               <label id="method-filter"><span>Method</span><select id="method"><option value="">All</option><option value="GET">GET</option><option value="POST">POST</option><option value="PUT">PUT</option><option value="PATCH">PATCH</option><option value="DELETE">DELETE</option><option value="HEAD">HEAD</option><option value="OPTIONS">OPTIONS</option><option value="CONNECT">CONNECT</option><option value="TRACE">TRACE</option></select></label>
+              <label id="status-filter"><span>Status</span><select id="status"><option value="">All</option><option value="class:2">2xx</option><option value="class:3">3xx</option><option value="class:4">4xx</option><option value="class:5">5xx</option></select></label>
               <label id="level-filter" class="hidden"><span>Level</span><select id="level"><option value="">All</option><option value="trace">TRACE</option><option value="debug">DEBUG</option><option value="info">INFO</option><option value="warn">WARN</option><option value="error">ERROR</option><option value="dpanic">DPANIC</option><option value="panic">PANIC</option><option value="fatal">FATAL</option></select></label>
               <label id="duration-filter"><span>Duration</span><select id="duration"><option value="0">All</option><option value="1">≥ 1 ms</option><option value="10">≥ 10 ms</option><option value="100">≥ 100 ms</option><option value="500">≥ 500 ms</option></select></label>
             </div>
-            <div class="list-heading"><span>Verb</span><span>Path</span><span>Status</span><span>Duration</span><span>Happened</span><span></span></div>
+            <div id="list-heading" class="list-heading"><span>Method</span><span>Path</span><span>Status</span><span class="list-duration">Duration</span><span class="list-time">Happened</span><span></span></div>
             <div id="events" class="events"></div>
             <div id="empty" class="empty">Waiting for matching events…</div>
           </section>

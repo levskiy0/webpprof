@@ -8,16 +8,17 @@ import (
 type Kind string
 
 const (
-	KindRequest   Kind = "request"
-	KindQuery     Kind = "query"
-	KindEmail     Kind = "email"
-	KindCache     Kind = "cache"
-	KindJob       Kind = "job"
-	KindLog       Kind = "log"
-	KindHTTPCall  Kind = "http_call"
-	KindSchedule  Kind = "schedule"
-	KindException Kind = "exception"
-	KindEvent     Kind = "event"
+	KindRequest    Kind = "request"
+	KindQuery      Kind = "query"
+	KindEmail      Kind = "email"
+	KindCache      Kind = "cache"
+	KindJob        Kind = "job"
+	KindLog        Kind = "log"
+	KindHTTPCall   Kind = "http_call"
+	KindSchedule   Kind = "schedule"
+	KindException  Kind = "exception"
+	KindEvent      Kind = "event"
+	KindMiddleware Kind = "middleware"
 )
 
 type Meta struct {
@@ -42,28 +43,30 @@ type HTTPMessage struct {
 
 type Request struct {
 	Meta
-	Method       string      `json:"method"`
-	Path         string      `json:"path"`
-	Route        string      `json:"route,omitempty"`
-	Query        string      `json:"query,omitempty"`
-	Protocol     string      `json:"protocol,omitempty"`
-	Host         string      `json:"host,omitempty"`
-	RemoteIP     string      `json:"remote_ip,omitempty"`
-	Status       int         `json:"status"`
-	RequestSize  int64       `json:"request_size,omitempty"`
-	ResponseSize int64       `json:"response_size,omitempty"`
-	Request      HTTPMessage `json:"request,omitempty"`
-	Response     HTTPMessage `json:"response,omitempty"`
-	Error        string      `json:"error,omitempty"`
-	Queries      []Query     `json:"queries,omitempty"`
-	Emails       []Email     `json:"emails,omitempty"`
-	Cache        []Cache     `json:"cache,omitempty"`
-	Jobs         []Job       `json:"jobs,omitempty"`
-	Logs         []Log       `json:"logs,omitempty"`
-	HTTPCalls    []HTTPCall  `json:"http_calls,omitempty"`
-	Schedules    []Schedule  `json:"schedules,omitempty"`
-	Exceptions   []Exception `json:"exceptions,omitempty"`
-	Events       []Event     `json:"events,omitempty"`
+	Method       string       `json:"method"`
+	Path         string       `json:"path"`
+	Route        string       `json:"route,omitempty"`
+	Query        string       `json:"query,omitempty"`
+	Scheme       string       `json:"scheme,omitempty"`
+	Protocol     string       `json:"protocol,omitempty"`
+	Host         string       `json:"host,omitempty"`
+	RemoteIP     string       `json:"remote_ip,omitempty"`
+	Status       int          `json:"status"`
+	RequestSize  int64        `json:"request_size,omitempty"`
+	ResponseSize int64        `json:"response_size,omitempty"`
+	Request      HTTPMessage  `json:"request,omitempty"`
+	Response     HTTPMessage  `json:"response,omitempty"`
+	Error        string       `json:"error,omitempty"`
+	Queries      []Query      `json:"queries,omitempty"`
+	Emails       []Email      `json:"emails,omitempty"`
+	Cache        []Cache      `json:"cache,omitempty"`
+	Jobs         []Job        `json:"jobs,omitempty"`
+	Logs         []Log        `json:"logs,omitempty"`
+	HTTPCalls    []HTTPCall   `json:"http_calls,omitempty"`
+	Schedules    []Schedule   `json:"schedules,omitempty"`
+	Exceptions   []Exception  `json:"exceptions,omitempty"`
+	Events       []Event      `json:"events,omitempty"`
+	Middlewares  []Middleware `json:"middlewares,omitempty"`
 }
 
 type RequestResult struct {
@@ -162,6 +165,7 @@ type Schedule struct {
 	Name      string    `json:"name"`
 	State     string    `json:"state,omitempty"`
 	PlannedAt time.Time `json:"planned_at,omitempty"`
+	Payload   any       `json:"payload,omitempty"`
 	Error     string    `json:"error,omitempty"`
 	Panic     string    `json:"panic,omitempty"`
 }
@@ -181,6 +185,16 @@ type Event struct {
 	Summary string         `json:"summary,omitempty"`
 	Fields  map[string]any `json:"fields,omitempty"`
 	Error   string         `json:"error,omitempty"`
+}
+
+// Middleware describes one named HTTP middleware invocation. Duration is
+// inclusive: it contains the time spent in the middleware and downstream
+// handlers.
+type Middleware struct {
+	Meta
+	Name  string `json:"name"`
+	State string `json:"state,omitempty"`
+	Error string `json:"error,omitempty"`
 }
 
 type Entry struct {
