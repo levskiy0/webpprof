@@ -6,6 +6,12 @@ Run from the repository root:
 go run ./example
 ```
 
+If port 3030 is busy, select another address without editing the example:
+
+```sh
+WEBPPROF_ADDR=127.0.0.1:3031 go run ./example
+```
+
 Open [http://127.0.0.1:3030/](http://127.0.0.1:3030/), generate one or more
 requests, then open
 [http://127.0.0.1:3030/debug/webpprof/](http://127.0.0.1:3030/debug/webpprof/).
@@ -19,8 +25,46 @@ The related **Schedules** entry includes a structured payload with a player ID,
 tenant, refresh mode, and requested resources.
 The related **Queries** entry also adds the entity-specific
 `repository=players` tag on top of the tags inherited from the request context.
+Open **Timeline** to see the named middleware nested automatically and all
+downstream entities positioned on a shared Gantt scale. The panel also shows
+the critical path, bottleneck, and recorded-time breakdown.
 Restart `go run ./example` after changing Go or embedded UI files. Stop it with
 `Ctrl+C`.
+
+### Diagnostics scenario
+
+Open `/demo?tenant=umbrella&diagnostics=1` or click **Diagnostics example** on
+the example home page. The request records deterministic synthetic examples
+for the five cross-entity backend analysis rules:
+
+- 47 player queries with one SQL fingerprint, detected as a possible N+1;
+- SQL work consuming about 82% of the recorded request timeline;
+- three sequential same-host HTTP calls that could run concurrently;
+- a cache miss immediately followed by 18 identical permission queries;
+- an `auth` middleware invocation taking 430 ms.
+
+These entries only carry captured durations: the example does not sleep or call
+an external database, HTTP service, or queue. Open the generated request and
+inspect its **Automatic findings** card. Findings are produced by the Go
+analyzer, include a suggested action, and link to the supporting related entry.
+The same request also demonstrates direct slow-query, slow-HTTP, failed-job,
+and cache miss-rate findings retained from the original Diagnostics card.
+
+## Custom dashboard example
+
+[`main.go`](main.go) also configures the dashboard explicitly with
+`webpprof.Dashboard(...)`. It demonstrates all three custom widget shapes:
+
+- **Demo requests** — a metric counter without a graph.
+- **Demo throughput** — a cumulative counter converted to requests per second,
+  with a sparkline.
+- **Demo outcomes** — a two-column group of current counters without charts.
+- **Demo result history** — a two-series custom chart.
+
+Generate several `/demo` and `/demo?fail=1` requests. Custom callbacks read
+atomic counters from the demo application every two seconds, so the cards and
+chart update live. The final `WithSlowestOperations()` option shows how a
+built-in full-width dashboard panel is mixed with custom widgets.
 
 ## Custom profiler example
 

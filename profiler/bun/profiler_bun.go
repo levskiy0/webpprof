@@ -18,6 +18,13 @@ type bunQueryProfiler struct {
 	config   Config
 }
 
+type queryTraceContextKey struct{}
+
+type queryTrace struct {
+	startedAt time.Time
+	callsite  []webpprof.SourceFrame
+}
+
 type Config struct {
 	Connection string
 	Driver     string
@@ -62,11 +69,20 @@ func ProfileWith(profiler *webpprof.Profiler, db *bun.DB, configs ...Config) *bu
 }
 
 func (h *bunQueryProfiler) BeforeQuery(ctx context.Context, _ *bun.QueryEvent) context.Context {
-	return ctx
+	return context.WithValue(ctx, queryTraceContextKey{}, queryTrace{
+		startedAt: time.Now().UTC(),
+		callsite:  webpprof.CaptureQueryCallsite(),
+	})
 }
 
 func (h *bunQueryProfiler) AfterQuery(ctx context.Context, source *bun.QueryEvent) {
-	event := webpprof.Query{Meta: webpprof.Meta{StartedAt: source.StartTime.UTC(), Duration: time.Since(source.StartTime)}, Connection: h.config.Connection, Driver: h.config.Driver, Database: h.config.Database, Operation: source.Operation(), SQL: compactSQL(source.QueryTemplate)}
+	startedAt := source.StartTime.UTC()
+	var callsite []webpprof.SourceFrame
+	if trace, ok := ctx.Value(queryTraceContextKey{}).(queryTrace); ok {
+		startedAt = trace.startedAt
+		callsite = trace.callsite
+	}
+	event := webpprof.Query{Meta: webpprof.Meta{StartedAt: startedAt, Duration: time.Since(startedAt)}, Connection: h.config.Connection, Driver: h.config.Driver, Database: h.config.Database, Operation: source.Operation(), SQL: compactSQL(source.QueryTemplate), Callsite: callsite}
 	if event.SQL == "" {
 		event.SQL = compactSQL(source.Query)
 	}

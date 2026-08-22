@@ -78,13 +78,34 @@ type RequestResult struct {
 
 type Query struct {
 	Meta
-	Connection   string `json:"connection,omitempty"`
-	Driver       string `json:"driver,omitempty"`
-	Database     string `json:"database,omitempty"`
-	Operation    string `json:"operation,omitempty"`
-	SQL          string `json:"sql"`
-	RowsAffected *int64 `json:"rows_affected,omitempty"`
-	Error        string `json:"error,omitempty"`
+	Connection   string        `json:"connection,omitempty"`
+	Driver       string        `json:"driver,omitempty"`
+	Database     string        `json:"database,omitempty"`
+	Operation    string        `json:"operation,omitempty"`
+	SQL          string        `json:"sql"`
+	RowsAffected *int64        `json:"rows_affected,omitempty"`
+	Callsite     []SourceFrame `json:"callsite,omitempty"`
+	Plan         *QueryPlan    `json:"plan,omitempty"`
+	Error        string        `json:"error,omitempty"`
+}
+
+// SourceFrame identifies one Go frame that led to a profiled operation. URL is
+// optional and can point to an editor deep link such as vscode://file/....
+type SourceFrame struct {
+	Function string `json:"function,omitempty"`
+	File     string `json:"file"`
+	Line     int    `json:"line"`
+	URL      string `json:"url,omitempty"`
+}
+
+// QueryPlan contains a non-executing SQL EXPLAIN result. Duration measures the
+// plan lookup itself and is intentionally separate from Query.Duration.
+type QueryPlan struct {
+	Command  string        `json:"command,omitempty"`
+	Format   string        `json:"format,omitempty"`
+	Text     string        `json:"text,omitempty"`
+	Duration time.Duration `json:"duration_ns,omitempty"`
+	Error    string        `json:"error,omitempty"`
 }
 
 type Address struct {
@@ -214,11 +235,20 @@ type Entry struct {
 }
 
 type Stats struct {
-	Events        int    `json:"events"`
-	Bytes         int64  `json:"bytes"`
-	DroppedEvents uint64 `json:"dropped_events"`
-	Subscribers   int    `json:"subscribers"`
-	Cursor        uint64 `json:"cursor"`
+	Events        int     `json:"events"`
+	Bytes         int64   `json:"bytes"`
+	DroppedEvents uint64  `json:"dropped_events"`
+	EvictedEvents uint64  `json:"evicted_events"`
+	Subscribers   int     `json:"subscribers"`
+	Cursor        uint64  `json:"cursor"`
+	MaxEvents     int     `json:"max_events"`
+	MaxBytes      int64   `json:"max_bytes"`
+	RetentionNS   int64   `json:"retention_ns"`
+	Storage       string  `json:"storage"`
+	StorageError  string  `json:"storage_error,omitempty"`
+	BodyLimit     int64   `json:"body_limit"`
+	SampleRate    float64 `json:"request_sample_rate"`
+	DisabledKinds []Kind  `json:"disabled_kinds,omitempty"`
 }
 
 type RuntimeStats struct {

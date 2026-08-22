@@ -70,11 +70,15 @@ func (p *Profiler) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 func (p *Profiler) streamSnapshot(r *http.Request, messageType string) streamMessage {
 	runtimeStats := p.RuntimeStats()
 	queueStats := p.QueueStats(r.Context())
+	stats := p.store.stats()
+	dashboard := p.DashboardSnapshot(r.Context())
 	return streamMessage{
-		Type:    messageType,
-		Cursor:  p.store.stats().Cursor,
-		Runtime: &runtimeStats,
-		Queues:  &queueStats,
+		Type:      messageType,
+		Cursor:    stats.Cursor,
+		Stats:     &stats,
+		Runtime:   &runtimeStats,
+		Queues:    &queueStats,
+		Dashboard: &dashboard,
 	}
 }
 

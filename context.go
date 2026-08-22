@@ -8,6 +8,29 @@ import (
 
 type recordingDisabledContextKey struct{}
 type tagsContextKey struct{}
+type parentEntryContextKey struct{}
+
+// WithParentEntry returns a context that makes entryID the default ParentID
+// for profiler entities recorded downstream. An explicit Meta.ParentID always
+// takes precedence.
+func WithParentEntry(ctx context.Context, entryID string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if entryID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, parentEntryContextKey{}, entryID)
+}
+
+// ParentEntryIDFromContext returns the current profiler parent entry ID.
+func ParentEntryIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	entryID, _ := ctx.Value(parentEntryContextKey{}).(string)
+	return entryID
+}
 
 // WithTags returns a context carrying tags inherited by every profiler entity
 // logged from it. When a request capture is present, the request receives the
@@ -52,7 +75,8 @@ func (p *Profiler) LogQueryContext(ctx context.Context, query Query) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return
 	}
-	query.Tags = mergeTags(TagsFromContext(ctx), query.Tags)
+	p.prepareQuery(&query)
+	inheritContextMeta(ctx, &query.Meta)
 	if request := RequestFromContext(ctx); request != nil {
 		query.RequestID = request.ID()
 		if request.append(func(parent *Request) {
@@ -73,7 +97,7 @@ func (p *Profiler) LogEmailContext(ctx context.Context, email Email) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return
 	}
-	email.Tags = mergeTags(TagsFromContext(ctx), email.Tags)
+	inheritContextMeta(ctx, &email.Meta)
 	if request := RequestFromContext(ctx); request != nil {
 		email.RequestID = request.ID()
 		if request.append(func(parent *Request) {
@@ -94,7 +118,7 @@ func (p *Profiler) LogCacheContext(ctx context.Context, cache Cache) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return
 	}
-	cache.Tags = mergeTags(TagsFromContext(ctx), cache.Tags)
+	inheritContextMeta(ctx, &cache.Meta)
 	if request := RequestFromContext(ctx); request != nil {
 		cache.RequestID = request.ID()
 		if request.append(func(parent *Request) {
@@ -115,7 +139,7 @@ func (p *Profiler) LogJobContext(ctx context.Context, job Job) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return
 	}
-	job.Tags = mergeTags(TagsFromContext(ctx), job.Tags)
+	inheritContextMeta(ctx, &job.Meta)
 	if request := RequestFromContext(ctx); request != nil {
 		job.RequestID = request.ID()
 		if request.append(func(parent *Request) {
@@ -136,7 +160,7 @@ func (p *Profiler) LogLogContext(ctx context.Context, log Log) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return
 	}
-	log.Tags = mergeTags(TagsFromContext(ctx), log.Tags)
+	inheritContextMeta(ctx, &log.Meta)
 	if request := RequestFromContext(ctx); request != nil {
 		log.RequestID = request.ID()
 		if request.append(func(parent *Request) {
@@ -157,7 +181,7 @@ func (p *Profiler) LogHTTPCallContext(ctx context.Context, call HTTPCall) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return
 	}
-	call.Tags = mergeTags(TagsFromContext(ctx), call.Tags)
+	inheritContextMeta(ctx, &call.Meta)
 	if request := RequestFromContext(ctx); request != nil {
 		call.RequestID = request.ID()
 		if request.append(func(parent *Request) {
@@ -178,7 +202,7 @@ func (p *Profiler) LogScheduleContext(ctx context.Context, schedule Schedule) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return
 	}
-	schedule.Tags = mergeTags(TagsFromContext(ctx), schedule.Tags)
+	inheritContextMeta(ctx, &schedule.Meta)
 	if request := RequestFromContext(ctx); request != nil {
 		schedule.RequestID = request.ID()
 		if request.append(func(parent *Request) {
@@ -199,7 +223,7 @@ func (p *Profiler) LogExceptionContext(ctx context.Context, exception Exception)
 	if p == nil || !RecordingEnabled(ctx) {
 		return
 	}
-	exception.Tags = mergeTags(TagsFromContext(ctx), exception.Tags)
+	inheritContextMeta(ctx, &exception.Meta)
 	if request := RequestFromContext(ctx); request != nil {
 		exception.RequestID = request.ID()
 		if request.append(func(parent *Request) {
@@ -231,7 +255,7 @@ func (p *Profiler) LogEventContext(ctx context.Context, event Event) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return
 	}
-	event.Tags = mergeTags(TagsFromContext(ctx), event.Tags)
+	inheritContextMeta(ctx, &event.Meta)
 	if request := RequestFromContext(ctx); request != nil {
 		event.RequestID = request.ID()
 		if request.append(func(parent *Request) {
@@ -256,7 +280,7 @@ func (p *Profiler) LogMiddlewareContext(ctx context.Context, middleware Middlewa
 	if p == nil || !RecordingEnabled(ctx) {
 		return
 	}
-	middleware.Tags = mergeTags(TagsFromContext(ctx), middleware.Tags)
+	inheritContextMeta(ctx, &middleware.Meta)
 	if request := RequestFromContext(ctx); request != nil {
 		middleware.RequestID = request.ID()
 		if request.append(func(parent *Request) {
@@ -281,4 +305,11 @@ func mergeTags(base, override map[string]string) map[string]string {
 		merged[key] = value
 	}
 	return merged
+}
+
+func inheritContextMeta(ctx context.Context, meta *Meta) {
+	meta.Tags = mergeTags(TagsFromContext(ctx), meta.Tags)
+	if meta.ParentID == "" {
+		meta.ParentID = ParentEntryIDFromContext(ctx)
+	}
 }

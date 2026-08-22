@@ -2,6 +2,7 @@ package webpprof
 
 import (
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"net/http"
 	"sync"
@@ -24,6 +25,8 @@ type Profiler struct {
 	serverMu          sync.Mutex
 	server            *http.Server
 	serverAddr        string
+	loginMu           sync.Mutex
+	loginFailures     map[string]loginFailure
 }
 
 func New(router Router, options ...Option) *Profiler {
@@ -48,7 +51,7 @@ func newProfiler(options ...Option) *Profiler {
 			option(&c)
 		}
 	}
-	return &Profiler{config: c, store: newEntryStore(c), startedAt: time.Now().UTC(), sessionToken: newID()}
+	return &Profiler{config: c, store: newEntryStore(c), startedAt: time.Now().UTC(), sessionToken: newID(), loginFailures: make(map[string]loginFailure)}
 }
 
 func NewIf(enabled bool, router Router, options ...Option) *Profiler {
@@ -103,7 +106,17 @@ func (p *Profiler) ShouldCaptureRequest(request *http.Request) bool {
 			return false
 		}
 	}
-	return true
+	if p.config.requestSample >= 1 {
+		return true
+	}
+	if p.config.requestSample <= 0 {
+		return false
+	}
+	var sample [8]byte
+	if _, err := rand.Read(sample[:]); err != nil {
+		return false
+	}
+	return float64(binary.BigEndian.Uint64(sample[:]))/float64(^uint64(0)) < p.config.requestSample
 }
 
 func NewID() string {
@@ -194,7 +207,13 @@ func (p *Profiler) LogRequest(request Request) {
 	p.record(KindRequest, request.Meta, request)
 }
 
-func (p *Profiler) LogQuery(query Query)          { p.record(KindQuery, query.Meta, query) }
+func (p *Profiler) LogQuery(query Query) {
+	if p == nil {
+		return
+	}
+	p.prepareQuery(&query)
+	p.record(KindQuery, query.Meta, query)
+}
 func (p *Profiler) LogEmail(email Email)          { p.record(KindEmail, email.Meta, email) }
 func (p *Profiler) LogCache(cache Cache)          { p.record(KindCache, cache.Meta, cache) }
 func (p *Profiler) LogJob(job Job)                { p.record(KindJob, job.Meta, job) }
@@ -230,6 +249,9 @@ func LogMiddleware(middleware Middleware) {
 
 func (p *Profiler) record(kind Kind, meta Meta, value any) {
 	if p == nil || p.store == nil {
+		return
+	}
+	if _, disabled := p.config.disabledKinds[kind]; disabled {
 		return
 	}
 	if meta.ID == "" {

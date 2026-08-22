@@ -3,8 +3,12 @@ package webpprof
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -89,10 +93,16 @@ func TestContextTagsAreInheritedAndEntityTagsOverrideThem(t *testing.T) {
 	capture := profiler.BeginRequest(Request{Meta: Meta{ID: "tagged-request"}, Method: http.MethodGet, Path: "/players"})
 	ctx := WithRequest(context.Background(), capture)
 	ctx = WithTags(ctx, map[string]string{"tenant": "acme", "environment": "dev"})
+	ctx = WithParentEntry(ctx, "parent-operation")
 	profiler.LogEventContext(ctx, Event{
 		Meta: Meta{ID: "tagged-event", Tags: map[string]string{"environment": "prod"}},
 		Kind: "player",
 		Name: "viewed",
+	})
+	profiler.LogEventContext(ctx, Event{
+		Meta: Meta{ID: "explicit-parent-event", ParentID: "manual-parent"},
+		Kind: "player",
+		Name: "updated",
 	})
 	capture.Finish(RequestResult{Status: http.StatusOK})
 
@@ -103,6 +113,13 @@ func TestContextTagsAreInheritedAndEntityTagsOverrideThem(t *testing.T) {
 	eventEntry, ok := profiler.store.get("tagged-event")
 	if !ok || eventEntry.Tags["tenant"] != "acme" || eventEntry.Tags["environment"] != "prod" {
 		t.Fatalf("event tags = %+v, found = %v", eventEntry.Tags, ok)
+	}
+	if eventEntry.ParentID != "parent-operation" || ParentEntryIDFromContext(ctx) != "parent-operation" {
+		t.Fatalf("event parent = %q, context parent = %q", eventEntry.ParentID, ParentEntryIDFromContext(ctx))
+	}
+	explicitParent, ok := profiler.store.get("explicit-parent-event")
+	if !ok || explicitParent.ParentID != "manual-parent" {
+		t.Fatalf("explicit event parent = %q, found = %v", explicitParent.ParentID, ok)
 	}
 	if tags := TagsFromContext(ctx); tags["tenant"] != "acme" {
 		t.Fatalf("context tags = %+v", tags)
@@ -205,6 +222,48 @@ func TestProfilerRequiresSessionToken(t *testing.T) {
 	}
 }
 
+func TestProfilerRateLimitsFailedLogins(t *testing.T) {
+	mux := http.NewServeMux()
+	profiler := New(mux, WithToken("profile-secret"))
+	t.Cleanup(func() { _ = profiler.Close() })
+	for attempt := 0; attempt < loginFailureLimit; attempt++ {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/debug/webpprof/session", strings.NewReader(`{"token":"wrong"}`))
+		request.RemoteAddr = "192.0.2.10:1234"
+		mux.ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d status = %d", attempt+1, response.Code)
+		}
+	}
+	blocked := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/debug/webpprof/session", strings.NewReader(`{"token":"profile-secret"}`))
+	request.RemoteAddr = "192.0.2.10:1234"
+	mux.ServeHTTP(blocked, request)
+	if blocked.Code != http.StatusTooManyRequests || blocked.Header().Get("Retry-After") == "" {
+		t.Fatalf("blocked status = %d, retry-after = %q", blocked.Code, blocked.Header().Get("Retry-After"))
+	}
+}
+
+func TestCaptureControlsDisableKindsAndRequestSampling(t *testing.T) {
+	profiler := New(http.NewServeMux(), WithRequestSampleRate(0), WithDisabledKinds(KindQuery, KindLog), WithBodyLimit(2048))
+	t.Cleanup(func() { _ = profiler.Close() })
+	if profiler.ShouldCaptureRequest(httptest.NewRequest(http.MethodGet, "/players", nil)) {
+		t.Fatal("zero sample rate captured a request")
+	}
+	profiler.LogQuery(Query{Meta: Meta{ID: "disabled-query"}, SQL: "SELECT 1"})
+	profiler.LogEvent(Event{Meta: Meta{ID: "enabled-event"}, Kind: "test", Name: "captured"})
+	if _, ok := profiler.store.get("disabled-query"); ok {
+		t.Fatal("disabled query kind was recorded")
+	}
+	if _, ok := profiler.store.get("enabled-event"); !ok {
+		t.Fatal("enabled event kind was not recorded")
+	}
+	stats := profiler.store.stats()
+	if stats.SampleRate != 0 || stats.BodyLimit != 2048 || len(stats.DisabledKinds) != 2 || stats.DisabledKinds[0] != KindLog || stats.DisabledKinds[1] != KindQuery {
+		t.Fatalf("capture stats = %+v", stats)
+	}
+}
+
 func TestStoreEvictsAndUpdatesEntries(t *testing.T) {
 	profiler := New(http.NewServeMux(), WithMaxEvents(2))
 	t.Cleanup(func() { _ = profiler.Close() })
@@ -218,6 +277,68 @@ func TestStoreEvictsAndUpdatesEntries(t *testing.T) {
 	entry, ok := profiler.store.get("job-1")
 	if !ok || !strings.Contains(string(entry.Data), "succeeded") {
 		t.Fatalf("updated job = %s, found=%v", entry.Data, ok)
+	}
+}
+
+func TestStorageJournalSurvivesRestart(t *testing.T) {
+	storagePath := filepath.Join(t.TempDir(), "webpprof.jsonl")
+	first := New(http.NewServeMux(), WithStoragePath(storagePath))
+	first.LogQuery(Query{Meta: Meta{ID: "persistent-query", Tags: map[string]string{"tenant": "acme"}}, SQL: "SELECT 1"})
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first profiler: %v", err)
+	}
+
+	second := New(http.NewServeMux(), WithStoragePath(storagePath))
+	t.Cleanup(func() { _ = second.Close() })
+	entry, ok := second.store.get("persistent-query")
+	if !ok || entry.Tags["tenant"] != "acme" || !strings.Contains(string(entry.Data), "SELECT 1") {
+		t.Fatalf("replayed entry = %+v, found = %v", entry, ok)
+	}
+	stats := second.store.stats()
+	if stats.Storage != "disk" || stats.Events != 1 || stats.StorageError != "" {
+		t.Fatalf("storage stats = %+v", stats)
+	}
+	info, err := os.Stat(storagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("journal permissions = %o, want owner-only", info.Mode().Perm())
+	}
+}
+
+func TestEventsEndpointPaginatesOlderEntries(t *testing.T) {
+	mux := http.NewServeMux()
+	profiler := New(mux)
+	t.Cleanup(func() { _ = profiler.Close() })
+	for index := range 5 {
+		profiler.LogEvent(Event{Meta: Meta{ID: "event-" + string(rune('a'+index))}, Kind: "page", Name: "event"})
+	}
+
+	decodePage := func(target string) struct {
+		Events  []Entry `json:"events"`
+		HasMore bool    `json:"has_more"`
+	} {
+		t.Helper()
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
+		var page struct {
+			Events  []Entry `json:"events"`
+			HasMore bool    `json:"has_more"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+			t.Fatal(err)
+		}
+		return page
+	}
+
+	latest := decodePage("/debug/webpprof/api/events?limit=2")
+	if len(latest.Events) != 2 || !latest.HasMore || latest.Events[0].ID != "event-d" || latest.Events[1].ID != "event-e" {
+		t.Fatalf("latest page = %+v", latest)
+	}
+	older := decodePage("/debug/webpprof/api/events?limit=2&before=" + strconv.FormatUint(latest.Events[0].Cursor, 10))
+	if len(older.Events) != 2 || !older.HasMore || older.Events[0].ID != "event-b" || older.Events[1].ID != "event-c" {
+		t.Fatalf("older page = %+v", older)
 	}
 }
 
@@ -262,7 +383,7 @@ func TestWebSocketReceivesLiveEvent(t *testing.T) {
 	if err := connection.ReadJSON(&connected); err != nil || connected.Type != "connected" {
 		t.Fatalf("connected = %+v, err=%v", connected, err)
 	}
-	if connected.Runtime == nil || connected.Queues == nil || len(connected.Queues.Sources) != 1 || connected.Queues.Sources[0].Source != "jobs" {
+	if connected.Stats == nil || connected.Runtime == nil || connected.Queues == nil || connected.Dashboard == nil || len(connected.Queues.Sources) != 1 || connected.Queues.Sources[0].Source != "jobs" {
 		t.Fatalf("connected stats = %+v", connected)
 	}
 	profiler.LogQuery(Query{Meta: Meta{ID: "live-query"}, SQL: "SELECT 1"})
@@ -297,7 +418,7 @@ func TestWebSocketStreamsStats(t *testing.T) {
 	if err := connection.ReadJSON(&update); err != nil {
 		t.Fatalf("read stats update: %v", err)
 	}
-	if update.Type != "stats.updated" || update.Runtime == nil || update.Queues == nil {
+	if update.Type != "stats.updated" || update.Runtime == nil || update.Queues == nil || update.Dashboard == nil {
 		t.Fatalf("stats update = %+v", update)
 	}
 }
@@ -322,11 +443,62 @@ func TestProfilerServesNativeUI(t *testing.T) {
 	if !strings.Contains(response.Body.String(), `id="tag-watcher"`) {
 		t.Fatal("profiler header does not contain the tag watcher")
 	}
+	for _, marker := range []string{`id="filter-toggle"`, `id="filters-drawer"`, `id="entity-filters"`, `id="time-range"`, `id="import-session"`, `id="export-session"`, `id="load-more"`, `id="capacity-status"`} {
+		if !strings.Contains(response.Body.String(), marker) {
+			t.Fatalf("profiler UI does not contain %s", marker)
+		}
+	}
+	for _, header := range []string{"Content-Security-Policy", "Cross-Origin-Opener-Policy", "Permissions-Policy", "Cache-Control"} {
+		if response.Header().Get(header) == "" {
+			t.Fatalf("profiler UI response does not contain %s", header)
+		}
+	}
 
 	application := httptest.NewRecorder()
 	mux.ServeHTTP(application, httptest.NewRequest(http.MethodGet, "/debug/webpprof/app.js", nil))
-	if !strings.Contains(application.Body.String(), `"middleware"`) || !strings.Contains(application.Body.String(), "watchedTags") || !strings.Contains(application.Body.String(), "data-copy-request") {
-		t.Fatal("profiler UI does not include middleware, tag watcher, and request export support")
+	if !strings.Contains(application.Body.String(), `"middleware"`) || !strings.Contains(application.Body.String(), "watchedTags") || !strings.Contains(application.Body.String(), "data-copy-request") || !strings.Contains(application.Body.String(), "requestHAR") || !strings.Contains(application.Body.String(), "requestDiagnosticsCard") || !strings.Contains(application.Body.String(), "dashboard-grid") || !strings.Contains(application.Body.String(), "customDashboardChart") || !strings.Contains(application.Body.String(), "updateFilterPanel") || !strings.Contains(application.Body.String(), "timelineCriticalPath") || !strings.Contains(application.Body.String(), "timelineBreakdown") {
+		t.Fatal("profiler UI does not include middleware, tag watcher, request export, HAR, diagnostics, configurable dashboard, and Gantt timeline support")
+	}
+}
+
+func TestEntryStoreConcurrentLoad(t *testing.T) {
+	configuration := defaultConfig()
+	configuration.maxEvents = 5_000
+	store := newEntryStore(configuration)
+	t.Cleanup(store.close)
+	const workers = 16
+	const entriesPerWorker = 200
+	var wait sync.WaitGroup
+	for worker := range workers {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for index := range entriesPerWorker {
+				store.put(Entry{ID: fmt.Sprintf("load-%d-%d", worker, index), Kind: KindEvent, RecordedAt: time.Now(), StartedAt: time.Now(), Data: json.RawMessage(`{"kind":"load","name":"event"}`)})
+				if index%25 == 0 {
+					_ = store.stats()
+					_ = store.list(KindEvent, "", nil, 0, 50)
+				}
+			}
+		}()
+	}
+	wait.Wait()
+	if stats := store.stats(); stats.Events != workers*entriesPerWorker || stats.DroppedEvents != 0 {
+		t.Fatalf("load stats = %+v", stats)
+	}
+}
+
+func BenchmarkEntryStorePutAndList(b *testing.B) {
+	configuration := defaultConfig()
+	configuration.maxEvents = max(configuration.maxEvents, b.N)
+	store := newEntryStore(configuration)
+	b.Cleanup(store.close)
+	b.ReportAllocs()
+	for index := 0; index < b.N; index++ {
+		store.put(Entry{ID: fmt.Sprintf("benchmark-%d", index), Kind: KindEvent, RecordedAt: time.Now(), StartedAt: time.Now(), Data: json.RawMessage(`{"kind":"benchmark","name":"event"}`)})
+		if index%100 == 0 {
+			_ = store.list(KindEvent, "", nil, 0, 100)
+		}
 	}
 }
 

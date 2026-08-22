@@ -170,6 +170,52 @@ func TestProfileMiddlewareCapturesNamedInvocation(t *testing.T) {
 	}
 }
 
+func TestProfileMiddlewareBuildsParentTree(t *testing.T) {
+	mux := stdlibhttp.NewServeMux()
+	profiler := webpprof.New(mux)
+	t.Cleanup(func() { _ = profiler.Close() })
+	outer := ProfileMiddlewareWith(profiler, "outer", func(next stdlibhttp.Handler) stdlibhttp.Handler { return next })
+	inner := ProfileMiddlewareWith(profiler, "inner", func(next stdlibhttp.Handler) stdlibhttp.Handler { return next })
+	handler := MiddlewareWith(profiler, outer(inner(stdlibhttp.HandlerFunc(func(w stdlibhttp.ResponseWriter, r *stdlibhttp.Request) {
+		profiler.LogQueryContext(r.Context(), webpprof.Query{
+			Meta: webpprof.Meta{ID: "nested-query", StartedAt: time.Now().UTC(), Duration: time.Millisecond},
+			SQL:  "SELECT 1",
+		})
+		w.WriteHeader(stdlibhttp.StatusNoContent)
+	}))))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(stdlibhttp.MethodGet, "/profiled", nil))
+
+	entries := readEvents(t, mux, "")
+	var query, outerEntry, innerEntry webpprof.Entry
+	for _, entry := range entries {
+		if entry.ID == "nested-query" {
+			query = entry
+		}
+		if entry.Kind != webpprof.KindMiddleware {
+			continue
+		}
+		var middleware webpprof.Middleware
+		if err := json.Unmarshal(entry.Data, &middleware); err != nil {
+			t.Fatal(err)
+		}
+		switch middleware.Name {
+		case "outer":
+			outerEntry = entry
+		case "inner":
+			innerEntry = entry
+		}
+	}
+	if outerEntry.ID == "" || innerEntry.ID == "" || query.ID == "" {
+		t.Fatalf("missing tree entries: outer=%q inner=%q query=%q", outerEntry.ID, innerEntry.ID, query.ID)
+	}
+	if innerEntry.ParentID != outerEntry.ID {
+		t.Fatalf("inner parent = %q, want outer %q", innerEntry.ParentID, outerEntry.ID)
+	}
+	if query.ParentID != innerEntry.ID {
+		t.Fatalf("query parent = %q, want inner %q", query.ParentID, innerEntry.ID)
+	}
+}
+
 func TestTransportDisabledProfilerUsesOriginalTransport(t *testing.T) {
 	transport := stdlibhttp.DefaultTransport
 	if ProfileTransportWith(nil, transport) != transport {

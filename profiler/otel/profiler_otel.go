@@ -127,7 +127,7 @@ func (p *otelProfilerProcessor) recordHTTPCall(span sdktrace.ReadOnlySpan, meta 
 }
 
 func (p *otelProfilerProcessor) recordQuery(span sdktrace.ReadOnlySpan, meta webpprof.Meta, attributes map[string]any) {
-	event := webpprof.Query{Meta: meta, Connection: otelString(attributes, "server.address", "net.peer.name"), Driver: otelString(attributes, "db.system.name", "db.system"), Database: otelString(attributes, "db.namespace", "db.name"), Operation: otelString(attributes, "db.operation.name", "db.operation"), SQL: compactSQL(otelString(attributes, "db.query.text", "db.statement")), Error: otelSpanError(span, attributes)}
+	event := webpprof.Query{Meta: meta, Connection: otelString(attributes, "server.address", "net.peer.name"), Driver: otelString(attributes, "db.system.name", "db.system"), Database: otelString(attributes, "db.namespace", "db.name"), Operation: otelString(attributes, "db.operation.name", "db.operation"), SQL: compactSQL(otelString(attributes, "db.query.text", "db.statement")), Callsite: otelQueryCallsite(attributes), Error: otelSpanError(span, attributes)}
 	if event.Operation == "" {
 		event.Operation = span.Name()
 	}
@@ -135,6 +135,16 @@ func (p *otelProfilerProcessor) recordQuery(span sdktrace.ReadOnlySpan, meta web
 		event.SQL = compactSQL(span.Name())
 	}
 	p.profiler.LogQuery(event)
+}
+
+func otelQueryCallsite(attributes map[string]any) []webpprof.SourceFrame {
+	file := otelString(attributes, "code.file.path", "code.filepath")
+	line := otelInt(attributes, "code.line.number", "code.lineno")
+	function := otelString(attributes, "code.function.name", "code.function")
+	if file == "" || line <= 0 {
+		return nil
+	}
+	return []webpprof.SourceFrame{{Function: function, File: file, Line: line}}
 }
 
 func (p *otelProfilerProcessor) recordCache(span sdktrace.ReadOnlySpan, meta webpprof.Meta, attributes map[string]any) {

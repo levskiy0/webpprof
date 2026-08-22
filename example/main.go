@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"os/signal"
 	"runtime/debug"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -17,21 +19,68 @@ import (
 	webpprofhttp "github.com/levskiy0/webpprof/profiler/http"
 )
 
-const address = "127.0.0.1:3030"
+const defaultAddress = "127.0.0.1:3030"
+
+const playerLookupSQL = "SELECT id, email FROM players WHERE id = 42"
 
 func main() {
+	address := os.Getenv("WEBPPROF_ADDR")
+	if address == "" {
+		address = defaultAddress
+	}
 	mux := http.NewServeMux()
+	metrics := &demoMetrics{}
 	profiler := webpprof.New(
 		mux,
 		webpprof.WithRetention(time.Hour),
 		webpprof.WithExcludedRequests("GET /favicon.ico"),
+		// Dashboard replaces the default layout. Widgets are rendered in the
+		// declared order on a responsive four-column grid.
+		webpprof.Dashboard(
+			webpprof.WithCPU(),
+			webpprof.WithGoMemory(),
+			webpprof.WithRequests(),
+			webpprof.WithQueries(),
+			webpprof.WithCustomMetric(webpprof.DashboardMetric{
+				ID:          "demo-total",
+				Title:       "Demo requests",
+				Description: "Counter without a graph",
+				Value:       metrics.totalValue,
+			}),
+			webpprof.WithCustomMetric(webpprof.DashboardMetric{
+				ID:          "demo-rate",
+				Title:       "Demo throughput",
+				Description: "Requests per second",
+				Unit:        "req/s",
+				Mode:        webpprof.DashboardMetricRate,
+				Sparkline:   true,
+				Color:       "#17a36d",
+				Value:       metrics.totalValue,
+			}),
+			webpprof.WithCounterGrid(webpprof.DashboardCounterGrid{
+				ID: "demo-outcomes", Title: "Demo outcomes", Description: "Latest application counters", Span: 2,
+				Counters: []webpprof.DashboardCounter{
+					{ID: "success", Label: "Succeeded", Value: metrics.successValue},
+					{ID: "failed", Label: "Failed", Value: metrics.failedValue},
+					{ID: "last-duration", Label: "Last duration", Format: webpprof.DashboardFormatDuration, Value: metrics.lastDurationValue},
+				},
+			}),
+			webpprof.WithCustomChart(webpprof.DashboardChart{
+				ID: "demo-history", Title: "Demo result history", Description: "Cumulative handler outcomes", Span: 2,
+				Series: []webpprof.DashboardSeries{
+					{ID: "success", Label: "Succeeded", Color: "#17a36d", Value: metrics.successValue},
+					{ID: "failed", Label: "Failed", Color: "#ba4a52", Value: metrics.failedValue},
+				},
+			}),
+			webpprof.WithSlowestOperations(),
+		),
 	)
 	defer profiler.Close()
 
 	// A custom profiler wraps an existing dependency once in the composition
 	// root. Application code continues to depend only on the original interface.
 	client := customprofiler.ProfileWith(profiler, demoClient{})
-	app := &demoApp{profiler: profiler, client: client}
+	app := &demoApp{profiler: profiler, client: client, metrics: metrics}
 	appMux := http.NewServeMux()
 	appMux.HandleFunc("GET /", app.home)
 	appMux.HandleFunc("GET /demo", app.demo)
@@ -81,6 +130,40 @@ func main() {
 type demoApp struct {
 	profiler *webpprof.Profiler
 	client   customprofiler.Client
+	metrics  *demoMetrics
+}
+
+type demoMetrics struct {
+	total        atomic.Uint64
+	succeeded    atomic.Uint64
+	failed       atomic.Uint64
+	lastDuration atomic.Int64
+}
+
+func (m *demoMetrics) record(failed bool, elapsed time.Duration) {
+	m.total.Add(1)
+	m.lastDuration.Store(int64(elapsed))
+	if failed {
+		m.failed.Add(1)
+		return
+	}
+	m.succeeded.Add(1)
+}
+
+func (m *demoMetrics) totalValue(context.Context) (float64, error) {
+	return float64(m.total.Load()), nil
+}
+
+func (m *demoMetrics) successValue(context.Context) (float64, error) {
+	return float64(m.succeeded.Load()), nil
+}
+
+func (m *demoMetrics) failedValue(context.Context) (float64, error) {
+	return float64(m.failed.Load()), nil
+}
+
+func (m *demoMetrics) lastDurationValue(context.Context) (float64, error) {
+	return float64(m.lastDuration.Load()), nil
 }
 
 func (a *demoApp) home(w http.ResponseWriter, _ *http.Request) {
@@ -91,6 +174,8 @@ func (a *demoApp) home(w http.ResponseWriter, _ *http.Request) {
 func (a *demoApp) demo(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	failed := r.URL.Query().Has("fail")
+	requestStartedAt := time.Now()
+	defer func() { a.metrics.record(failed, time.Since(requestStartedAt)) }()
 	startedAt := time.Now().UTC()
 	rows := int64(1)
 	lookupKey := "player:42"
@@ -115,7 +200,7 @@ func (a *demoApp) demo(w http.ResponseWriter, r *http.Request) {
 		Driver:       "sqlite",
 		Database:     "local",
 		Operation:    "SELECT",
-		SQL:          "SELECT id, email FROM players WHERE id = 42",
+		SQL:          playerLookupSQL,
 		RowsAffected: &rows,
 	})
 	a.profiler.LogCacheContext(ctx, webpprof.Cache{
@@ -177,6 +262,9 @@ func (a *demoApp) demo(w http.ResponseWriter, r *http.Request) {
 		Summary: "Player 42 was opened in the local example",
 		Fields:  map[string]any{"player_id": 42},
 	})
+	if r.URL.Query().Has("diagnostics") {
+		a.logDiagnosticExamples(ctx, startedAt.Add(50*time.Millisecond))
+	}
 
 	status := http.StatusOK
 	if failed {
@@ -197,6 +285,121 @@ func (a *demoApp) demo(w http.ResponseWriter, r *http.Request) {
 		"message":  "Open webpprof and inspect the newest request",
 		"profiler": profilerURL(r, a.profiler),
 	})
+}
+
+// logDiagnosticExamples records deterministic synthetic bottlenecks. They do
+// not sleep or call external services; their captured durations exist only to
+// demonstrate automatic backend findings in the request detail.
+func (a *demoApp) logDiagnosticExamples(ctx context.Context, startedAt time.Time) {
+	rows := int64(1)
+	// Together with the normal player lookup above this creates 47 queries with
+	// the same fingerprint, which the analyzer reports as a possible N+1.
+	for index := range 46 {
+		a.profiler.LogQueryContext(ctx, webpprof.Query{
+			Meta: webpprof.Meta{
+				StartedAt: startedAt.Add(time.Duration(index) * 2 * time.Millisecond),
+				Duration:  2 * time.Millisecond,
+				Tags:      map[string]string{"diagnostic": "n-plus-one"},
+			},
+			Connection:   "example",
+			Driver:       "sqlite",
+			Database:     "local",
+			Operation:    "SELECT",
+			SQL:          playerLookupSQL,
+			RowsAffected: &rows,
+		})
+	}
+	a.profiler.LogQueryContext(ctx, webpprof.Query{
+		Meta: webpprof.Meta{
+			StartedAt: startedAt.Add(100 * time.Millisecond),
+			Duration:  575 * time.Millisecond,
+			Tags:      map[string]string{"diagnostic": "sql-share"},
+		},
+		Connection:   "analytics",
+		Driver:       "sqlite",
+		Database:     "local",
+		Operation:    "SELECT",
+		SQL:          "SELECT * FROM audit_log ORDER BY created_at DESC",
+		RowsAffected: &rows,
+	})
+	a.profiler.LogHTTPCallContext(ctx, webpprof.HTTPCall{
+		Meta: webpprof.Meta{
+			StartedAt: startedAt.Add(55 * time.Millisecond),
+			Duration:  650 * time.Millisecond,
+			Tags:      map[string]string{"diagnostic": "slow-http"},
+		},
+		Method:       http.MethodGet,
+		URL:          "https://api.example.test/reports/daily",
+		Status:       http.StatusOK,
+		ResponseSize: 8192,
+	})
+	a.profiler.LogMiddlewareContext(ctx, webpprof.Middleware{
+		Meta: webpprof.Meta{
+			StartedAt: startedAt.Add(110 * time.Millisecond),
+			Duration:  430 * time.Millisecond,
+			Tags:      map[string]string{"diagnostic": "slow-middleware"},
+		},
+		Name:  "auth",
+		State: "completed",
+	})
+	a.profiler.LogJobContext(ctx, webpprof.Job{
+		Meta: webpprof.Meta{
+			StartedAt: startedAt.Add(65 * time.Millisecond),
+			Duration:  18 * time.Millisecond,
+			Tags:      map[string]string{"diagnostic": "failed-job"},
+		},
+		Name:       "GenerateDailyReport",
+		Queue:      "reports",
+		Connection: "sync",
+		State:      "failed",
+		Attempt:    3,
+		Error:      "synthetic diagnostics example: worker unavailable",
+	})
+
+	// A miss followed by repeated reads is different from a generic N+1: the
+	// cache should be populated once, then reused for the rest of the request.
+	a.profiler.LogCacheContext(ctx, webpprof.Cache{
+		Meta: webpprof.Meta{
+			StartedAt: startedAt.Add(640 * time.Millisecond),
+			Duration:  time.Millisecond,
+			Tags:      map[string]string{"diagnostic": "cache-query-burst"},
+		},
+		Store:     "memory",
+		Operation: "get",
+		Key:       "player:42:permissions",
+		Hit:       false,
+	})
+	for index := range 18 {
+		a.profiler.LogQueryContext(ctx, webpprof.Query{
+			Meta: webpprof.Meta{
+				StartedAt: startedAt.Add(645*time.Millisecond + time.Duration(index)*2*time.Millisecond),
+				Duration:  time.Millisecond,
+				Tags:      map[string]string{"diagnostic": "cache-query-burst"},
+			},
+			Connection:   "example",
+			Driver:       "sqlite",
+			Database:     "local",
+			Operation:    "SELECT",
+			SQL:          "SELECT permission FROM player_permissions WHERE player_id = 42",
+			RowsAffected: &rows,
+		})
+	}
+
+	// Same-host, successful, non-overlapping calls form a conservative
+	// concurrency candidate. The analyzer intentionally does not group calls to
+	// different hosts or overlapping calls.
+	for index := range 3 {
+		a.profiler.LogHTTPCallContext(ctx, webpprof.HTTPCall{
+			Meta: webpprof.Meta{
+				StartedAt: startedAt.Add(720*time.Millisecond + time.Duration(index)*30*time.Millisecond),
+				Duration:  25 * time.Millisecond,
+				Tags:      map[string]string{"diagnostic": "sequential-http"},
+			},
+			Method: http.MethodGet,
+			URL:    fmt.Sprintf("https://assets.example.test/player/42/part/%d", index+1),
+			Status: http.StatusOK,
+		})
+	}
 }
 
 func (a *demoApp) panic(http.ResponseWriter, *http.Request) {
@@ -234,7 +437,9 @@ func demoTags(next http.Handler) http.Handler {
 			tenant = "acme"
 		}
 		scenario := "success"
-		if r.URL.Query().Has("fail") || r.URL.Path == "/panic" {
+		if r.URL.Query().Has("diagnostics") {
+			scenario = "diagnostics"
+		} else if r.URL.Query().Has("fail") || r.URL.Path == "/panic" {
 			scenario = "failure"
 		}
 		ctx := webpprof.WithTags(r.Context(), map[string]string{
@@ -286,6 +491,7 @@ const homePage = `<!doctype html>
       <a class="primary" href="/demo?tenant=acme">Acme success</a>
       <a href="/demo?tenant=umbrella">Umbrella success</a>
       <a href="/demo?tenant=acme&amp;fail=1">Acme failure</a>
+      <a href="/demo?tenant=umbrella&amp;diagnostics=1">Diagnostics example</a>
       <a href="/panic?tenant=umbrella">Umbrella panic</a>
       <a href="/debug/webpprof/">Open webpprof</a>
     </nav>

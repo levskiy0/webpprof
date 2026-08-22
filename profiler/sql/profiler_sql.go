@@ -11,9 +11,12 @@ import (
 )
 
 type Config struct {
-	Connection string
-	Driver     string
-	Database   string
+	Connection     string
+	Driver         string
+	Database       string
+	Explain        bool
+	ExplainTimeout time.Duration
+	ExplainMaxRows int
 }
 
 type sqlConnectorProfiler struct {
@@ -41,6 +44,7 @@ type sqlConnProfiler struct {
 
 type sqlStmtProfiler struct {
 	inner    driver.Stmt
+	conn     *sqlConnProfiler
 	profiler *webpprof.Profiler
 	config   Config
 	query    string
@@ -167,7 +171,7 @@ func (c *sqlConnProfiler) Prepare(query string) (driver.Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &sqlStmtProfiler{inner: statement, profiler: c.profiler, config: c.config, query: query}, nil
+	return &sqlStmtProfiler{inner: statement, conn: c, profiler: c.profiler, config: c.config, query: query}, nil
 }
 
 func (c *sqlConnProfiler) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
@@ -186,7 +190,7 @@ func (c *sqlConnProfiler) PrepareContext(ctx context.Context, query string) (dri
 	if err != nil {
 		return nil, err
 	}
-	return &sqlStmtProfiler{inner: statement, profiler: c.profiler, config: c.config, query: query}, nil
+	return &sqlStmtProfiler{inner: statement, conn: c, profiler: c.profiler, config: c.config, query: query}, nil
 }
 
 func (c *sqlConnProfiler) Close() error {
@@ -220,13 +224,17 @@ func (c *sqlConnProfiler) Exec(query string, args []driver.Value) (driver.Result
 	if !ok {
 		return nil, driver.ErrSkip
 	}
+	callsite := webpprof.CaptureQueryCallsite()
+	plan := c.explain(context.Background(), query, namedValues(args))
 	startedAt := time.Now().UTC()
 	result, err := execer.Exec(query, args)
-	c.record(context.Background(), startedAt, query, result, err)
+	c.record(context.Background(), startedAt, query, result, err, callsite, plan)
 	return result, err
 }
 
 func (c *sqlConnProfiler) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	callsite := webpprof.CaptureQueryCallsite()
+	plan := c.explain(ctx, query, args)
 	startedAt := time.Now().UTC()
 	var result driver.Result
 	var err error
@@ -246,7 +254,7 @@ func (c *sqlConnProfiler) ExecContext(ctx context.Context, query string, args []
 	} else {
 		return nil, driver.ErrSkip
 	}
-	c.record(ctx, startedAt, query, result, err)
+	c.record(ctx, startedAt, query, result, err, callsite, plan)
 	return result, err
 }
 
@@ -255,13 +263,17 @@ func (c *sqlConnProfiler) Query(query string, args []driver.Value) (driver.Rows,
 	if !ok {
 		return nil, driver.ErrSkip
 	}
+	callsite := webpprof.CaptureQueryCallsite()
+	plan := c.explain(context.Background(), query, namedValues(args))
 	startedAt := time.Now().UTC()
 	rows, err := queryer.Query(query, args)
-	c.record(context.Background(), startedAt, query, nil, err)
+	c.record(context.Background(), startedAt, query, nil, err, callsite, plan)
 	return rows, err
 }
 
 func (c *sqlConnProfiler) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	callsite := webpprof.CaptureQueryCallsite()
+	plan := c.explain(ctx, query, args)
 	startedAt := time.Now().UTC()
 	var rows driver.Rows
 	var err error
@@ -281,7 +293,7 @@ func (c *sqlConnProfiler) QueryContext(ctx context.Context, query string, args [
 	} else {
 		return nil, driver.ErrSkip
 	}
-	c.record(ctx, startedAt, query, nil, err)
+	c.record(ctx, startedAt, query, nil, err, callsite, plan)
 	return rows, err
 }
 
@@ -313,11 +325,11 @@ func (c *sqlConnProfiler) CheckNamedValue(value *driver.NamedValue) error {
 	return driver.ErrSkip
 }
 
-func (c *sqlConnProfiler) record(ctx context.Context, startedAt time.Time, query string, result driver.Result, err error) {
+func (c *sqlConnProfiler) record(ctx context.Context, startedAt time.Time, query string, result driver.Result, err error, callsite []webpprof.SourceFrame, plan *webpprof.QueryPlan) {
 	if err == driver.ErrSkip {
 		return
 	}
-	event := webpprof.Query{Meta: webpprof.Meta{StartedAt: startedAt, Duration: time.Since(startedAt)}, Connection: c.config.Connection, Driver: c.config.Driver, Database: c.config.Database, Operation: sqlOperation(query), SQL: compactSQL(query)}
+	event := webpprof.Query{Meta: webpprof.Meta{StartedAt: startedAt, Duration: time.Since(startedAt)}, Connection: c.config.Connection, Driver: c.config.Driver, Database: c.config.Database, Operation: sqlOperation(query), SQL: compactSQL(query), Callsite: callsite, Plan: plan}
 	if result != nil {
 		if rows, rowsErr := result.RowsAffected(); rowsErr == nil {
 			event.RowsAffected = int64Pointer(rows)
@@ -352,20 +364,26 @@ func (s *sqlStmtProfiler) CheckNamedValue(value *driver.NamedValue) error {
 }
 
 func (s *sqlStmtProfiler) Exec(args []driver.Value) (driver.Result, error) {
+	callsite := webpprof.CaptureQueryCallsite()
+	plan := s.conn.explain(context.Background(), s.query, namedValues(args))
 	startedAt := time.Now().UTC()
 	result, err := s.inner.Exec(args)
-	s.record(context.Background(), startedAt, result, err)
+	s.record(context.Background(), startedAt, result, err, callsite, plan)
 	return result, err
 }
 
 func (s *sqlStmtProfiler) Query(args []driver.Value) (driver.Rows, error) {
+	callsite := webpprof.CaptureQueryCallsite()
+	plan := s.conn.explain(context.Background(), s.query, namedValues(args))
 	startedAt := time.Now().UTC()
 	rows, err := s.inner.Query(args)
-	s.record(context.Background(), startedAt, nil, err)
+	s.record(context.Background(), startedAt, nil, err, callsite, plan)
 	return rows, err
 }
 
 func (s *sqlStmtProfiler) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+	callsite := webpprof.CaptureQueryCallsite()
+	plan := s.conn.explain(ctx, s.query, args)
 	startedAt := time.Now().UTC()
 	var result driver.Result
 	var err error
@@ -383,11 +401,13 @@ func (s *sqlStmtProfiler) ExecContext(ctx context.Context, args []driver.NamedVa
 		}
 		result, err = s.inner.Exec(values)
 	}
-	s.record(ctx, startedAt, result, err)
+	s.record(ctx, startedAt, result, err, callsite, plan)
 	return result, err
 }
 
 func (s *sqlStmtProfiler) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	callsite := webpprof.CaptureQueryCallsite()
+	plan := s.conn.explain(ctx, s.query, args)
 	startedAt := time.Now().UTC()
 	var rows driver.Rows
 	var err error
@@ -405,12 +425,12 @@ func (s *sqlStmtProfiler) QueryContext(ctx context.Context, args []driver.NamedV
 		}
 		rows, err = s.inner.Query(values)
 	}
-	s.record(ctx, startedAt, nil, err)
+	s.record(ctx, startedAt, nil, err, callsite, plan)
 	return rows, err
 }
 
-func (s *sqlStmtProfiler) record(ctx context.Context, startedAt time.Time, result driver.Result, err error) {
-	event := webpprof.Query{Meta: webpprof.Meta{StartedAt: startedAt, Duration: time.Since(startedAt)}, Connection: s.config.Connection, Driver: s.config.Driver, Database: s.config.Database, Operation: sqlOperation(s.query), SQL: compactSQL(s.query)}
+func (s *sqlStmtProfiler) record(ctx context.Context, startedAt time.Time, result driver.Result, err error, callsite []webpprof.SourceFrame, plan *webpprof.QueryPlan) {
+	event := webpprof.Query{Meta: webpprof.Meta{StartedAt: startedAt, Duration: time.Since(startedAt)}, Connection: s.config.Connection, Driver: s.config.Driver, Database: s.config.Database, Operation: sqlOperation(s.query), SQL: compactSQL(s.query), Callsite: callsite, Plan: plan}
 	if result != nil {
 		if rows, rowsErr := result.RowsAffected(); rowsErr == nil {
 			event.RowsAffected = int64Pointer(rows)
@@ -438,6 +458,14 @@ func sqlNamedValues(args []driver.NamedValue) ([]driver.Value, error) {
 		values[index] = arg.Value
 	}
 	return values, nil
+}
+
+func namedValues(args []driver.Value) []driver.NamedValue {
+	values := make([]driver.NamedValue, len(args))
+	for index, arg := range args {
+		values[index] = driver.NamedValue{Ordinal: index + 1, Value: arg}
+	}
+	return values
 }
 
 func sqlOperation(query string) string {

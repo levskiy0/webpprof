@@ -91,7 +91,11 @@ func ProfileMiddlewareWith(p *webpprof.Profiler, name string, middleware func(st
 		}
 		return stdlibhttp.HandlerFunc(func(w stdlibhttp.ResponseWriter, r *stdlibhttp.Request) {
 			invocation := webpprof.Middleware{
-				Meta:  webpprof.Meta{StartedAt: time.Now().UTC()},
+				Meta: webpprof.Meta{
+					ID:        webpprof.NewID(),
+					ParentID:  webpprof.ParentEntryIDFromContext(r.Context()),
+					StartedAt: time.Now().UTC(),
+				},
 				Name:  name,
 				State: "completed",
 			}
@@ -105,7 +109,8 @@ func ProfileMiddlewareWith(p *webpprof.Profiler, name string, middleware func(st
 				}
 				p.LogMiddlewareContext(r.Context(), invocation)
 			}()
-			wrapped.ServeHTTP(w, r)
+			ctx := webpprof.WithParentEntry(r.Context(), invocation.ID)
+			wrapped.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }

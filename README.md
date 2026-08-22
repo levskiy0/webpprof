@@ -1,33 +1,69 @@
-# webpprof
+# webpprof — a Telescope-like request profiler and debug toolbar for Go
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/levskiy0/webpprof.svg)](https://pkg.go.dev/github.com/levskiy0/webpprof)
 [![CI](https://github.com/levskiy0/webpprof/actions/workflows/ci.yml/badge.svg)](https://github.com/levskiy0/webpprof/actions/workflows/ci.yml)
 
 [https://github.com/levskiy0/webpprof](https://github.com/levskiy0/webpprof)
 
-`webpprof` is a Telescope-like, in-memory application profiler for Go. It collects related application events in a searchable UI with live WebSocket updates. It is intended for development and short investigations, not durable storage.
+`webpprof` is a Telescope-like request profiler and debug toolbar for Go
+(Golang) web applications. It shows everything one HTTP request did — SQL
+queries, cache operations, background jobs, logs, mail, outgoing HTTP calls,
+middleware, and panics — in one searchable local UI.
+
+Open a request to see its complete application timeline, find the operation
+that made an endpoint slow, inspect the SQL it executed, and replay the captured
+HTTP request as cURL. Live WebSocket updates keep the dashboard current while
+you reproduce a problem.
+
+webpprof runs inside the application and needs no external collector, Docker
+stack, or database. Captures are bounded and kept in memory by default, with
+optional local persistence for short investigations. It is a development and
+diagnostic tool, not a long-term production APM.
 
 ![webpprof query details with a correlated request and highlighted SQL](docs/images/webpprof-query-details.png)
+
+## Why webpprof?
+
+Go already has excellent runtime profiling and observability tools. The missing
+piece during application development is often a quick answer to questions about
+one concrete request:
+
+- Why is this HTTP endpoint slow?
+- Which SQL queries, cache operations, and outgoing calls did it execute?
+- Which logs, jobs, and exceptions belong to it?
+- What happened before a panic or failed response?
+- Can I inspect and replay the exact captured request without searching logs?
+
+webpprof correlates those events through `context.Context` and presents them as
+one request-centric view. This makes it useful as a Go request profiler, SQL
+query profiler, Gin profiler, and local observability dashboard without turning
+local debugging into an infrastructure project.
+
+## Features
+
+- **Request inspection:** method, route, status, duration, headers, bounded
+  request and response bodies, raw HTTP, and ready-to-run cURL.
+- **SQL query profiling:** SQL text, connection, driver, database, operation,
+  rows, duration, and errors from Bun, `database/sql`, or OpenTelemetry spans.
+- **Request correlation:** related middleware, queries, cache operations, jobs,
+  logs, mail, outgoing HTTP calls, schedules, exceptions, and custom events.
+- **Waterfall timeline:** inspect proportional Gantt bars on one request-wide
+  scale, automatic `ParentID` nesting, the calculated critical path,
+  bottleneck, and operation-time breakdown.
+- **Live debug dashboard:** WebSocket updates, full-text search, entity filters,
+  duration filters, tag watching, runtime health, queue health, and slowest
+  operations.
+- **Framework-friendly integration:** standard `net/http`, Gin, Bun, go-redis,
+  `slog`, Zap, OpenTelemetry, and other focused profiler packages.
+- **Zero work when disabled:** do not initialize the profiler in environments
+  where it should not record; package-level logging helpers remain safe no-ops.
+
 
 ## Install
 
 ```sh
 go get github.com/levskiy0/webpprof
 ```
-
-## Local development
-
-Run the bundled example from the repository root:
-
-```sh
-go run ./example
-```
-
-Open [http://127.0.0.1:3030/](http://127.0.0.1:3030/), generate a successful,
-failed, or panic request, then inspect it at
-[http://127.0.0.1:3030/debug/webpprof/](http://127.0.0.1:3030/debug/webpprof/).
-The example generates every related event type without external services. See
-[example/README.md](example/README.md) for details.
 
 ## Quick start
 
@@ -81,6 +117,159 @@ the complete original request.
 When profiling is disabled, do not call `Start`, `New`, or any profiler wrapper. Package-level `Log*` functions are safe no-ops without an active profiler.
 
 Use `webpprof.New(router, options...)` when the application owns the HTTP server. `Start` creates a private listener.
+
+## Try the Go profiler locally
+
+Run the bundled example from the repository root:
+
+```sh
+go run ./example
+```
+
+If port 3030 is already occupied, choose another loopback address:
+
+```sh
+WEBPPROF_ADDR=127.0.0.1:3031 go run ./example
+```
+
+Open [http://127.0.0.1:3030/](http://127.0.0.1:3030/), generate a successful,
+failed, or panic request, then inspect it at
+[http://127.0.0.1:3030/debug/webpprof/](http://127.0.0.1:3030/debug/webpprof/).
+The example generates every related event type without external services. See
+[example/README.md](example/README.md) for details.
+
+## Configurable dashboard
+
+Pass `Dashboard(...)` to replace the default dashboard. Widgets keep the order
+in which they are declared and use a four-column desktop grid. Charts and
+counter groups can occupy 1–4 columns; the layout collapses responsively on
+smaller screens.
+
+```go
+var requests atomic.Uint64
+var succeeded atomic.Uint64
+var failed atomic.Uint64
+
+profiler := webpprof.New(
+    mux,
+    webpprof.Dashboard(
+        // Built-in cards and panels can be composed in any order.
+        webpprof.WithCPU(),
+        webpprof.WithGoMemory(),
+
+        // A plain metric is a counter card without a graph.
+        webpprof.WithCustomMetric(webpprof.DashboardMetric{
+            ID:          "orders-total",
+            Title:       "Orders",
+            Description: "Accepted since process start",
+            Value: func(context.Context) (float64, error) {
+                return float64(requests.Load()), nil
+            },
+        }),
+
+        // Rate mode expects a cumulative counter. webpprof samples it and the
+        // browser derives the per-second change and draws the sparkline.
+        webpprof.WithCustomMetric(webpprof.DashboardMetric{
+            ID:        "orders-rate",
+            Title:     "Order throughput",
+            Unit:      "orders/s",
+            Mode:      webpprof.DashboardMetricRate,
+            Sparkline: true,
+            Color:     "#17a36d",
+            Value: func(context.Context) (float64, error) {
+                return float64(requests.Load()), nil
+            },
+        }),
+
+        // A counter grid contains independent current values and no graph.
+        webpprof.WithCounterGrid(webpprof.DashboardCounterGrid{
+            ID: "order-results", Title: "Order results", Span: 2,
+            Counters: []webpprof.DashboardCounter{
+                {ID: "ok", Label: "Succeeded", Value: func(context.Context) (float64, error) {
+                    return float64(succeeded.Load()), nil
+                }},
+                {ID: "failed", Label: "Failed", Value: func(context.Context) (float64, error) {
+                    return float64(failed.Load()), nil
+                }},
+            },
+        }),
+
+        // Each callback becomes one line in a custom time-series chart.
+        webpprof.WithCustomChart(webpprof.DashboardChart{
+            ID: "order-history", Title: "Order history", Span: 2,
+            Series: []webpprof.DashboardSeries{
+                {ID: "ok", Label: "Succeeded", Color: "#17a36d", Value: func(context.Context) (float64, error) {
+                    return float64(succeeded.Load()), nil
+                }},
+                {ID: "failed", Label: "Failed", Color: "#ba4a52", Value: func(context.Context) (float64, error) {
+                    return float64(failed.Load()), nil
+                }},
+            },
+        }),
+
+        webpprof.WithSlowestOperations(), // Full-width built-in panel.
+    ),
+)
+```
+
+Available built-ins are `WithCPU`, `WithGoMemory`, `WithRequests`,
+`WithQueries`, `WithCacheHitRate`, `WithGoroutines`, `WithEventMix`,
+`WithQueueHealth`, and `WithSlowestOperations`. Without `Dashboard(...)`, all
+of them are enabled using the default layout.
+
+Custom value callbacks run when the page opens and with every two-second live
+dashboard update. They must be concurrency-safe, return quickly, and honor
+context cancellation. `WithDashboardTimeout` supplies the deadline shared by
+one custom snapshot; an error is shown on its widget and does not break other
+widgets. A duration
+value uses nanoseconds (`DashboardFormatDuration`), percent uses the 0–100
+scale (`DashboardFormatPercent`), and byte values use
+`DashboardFormatBytes`. Widget IDs must be stable so the browser can retain
+their sparkline history across updates.
+
+## Capture and storage configuration
+
+The defaults retain at most 10,000 events or 64 MiB for 30 minutes and capture
+at most 64 KiB per HTTP body. Tune those limits at startup; the header capacity
+indicator warns at 70% and turns critical at 90%.
+
+```go
+profiler := webpprof.New(
+    mux,
+    webpprof.WithRetention(2*time.Hour),
+    webpprof.WithMaxEvents(25_000),
+    webpprof.WithMaxBytes(128<<20),
+    webpprof.WithBodyLimit(32<<10),
+    webpprof.WithRequestSampleRate(0.25), // Capture roughly one request in four.
+    webpprof.WithDisabledKinds(webpprof.KindEmail, webpprof.KindLog),
+    webpprof.WithStoragePath("./var/webpprof/events.jsonl"),
+)
+```
+
+`WithStoragePath` is optional. It uses an owner-only append journal, replays it
+on restart, applies the same retention and size limits, and compacts it
+automatically. The journal contains captured application data: keep it outside
+public directories, do not commit it, and remove it after the investigation.
+Without this option, all events remain in memory and disappear on shutdown.
+
+The UI initially loads the newest 250 entries. **Load older events** requests
+the next server page, so large capture windows do not create an unbounded DOM.
+Session JSON can be exported or imported from the header; an individual request
+can also be copied or downloaded as HAR.
+
+## Security
+
+Bind a standalone profiler to loopback or a private administrative network and
+set a strong `WithToken` value outside source control. Token comparison is
+constant-time, failed login attempts are throttled per client, session cookies
+are `HttpOnly` and `SameSite=Strict`, and every profiler route receives a strict
+CSP and no-store response headers. Use `WithSecureCookie(true)` behind HTTPS.
+
+Do not expose an unprotected profiler to the public internet. Captures may
+contain personal data, request bodies, SQL, mail, and stack traces even after
+automatic redaction. Add private-network authentication at the reverse proxy as
+a second layer when remote access is required. `WithAllowedOrigins` should list
+only explicit trusted profiler origins needed for WebSocket access.
 
 ## Request correlation
 
@@ -217,6 +406,40 @@ Middleware duration is inclusive: it includes the named middleware and the
 downstream handlers it invokes. Panicking middleware is recorded with state
 `panicked`, then the panic is propagated.
 
+### Automatic request findings
+
+The viewer asks the Go analyzer for conclusions derived from the complete
+request timeline. The rules live in `analysis.go`; the browser only renders the
+returned `Finding` values. Current findings detect:
+
+- query fingerprints repeated at least three times (possible N+1);
+- SQL consuming at least 50% of the effective request duration;
+- three or more successful, non-overlapping calls to one HTTP host;
+- a cache miss immediately followed by at least three identical queries;
+- named middleware with an inclusive duration of at least 100 ms.
+
+The analyzer also preserves direct slow request/query/HTTP, failed job/mail/HTTP,
+and high cache miss-rate findings when no richer cross-entity pattern applies.
+
+Each finding contains a stable code, severity, human-readable evidence, a
+suggested action, and IDs of the supporting entries. Applications can use the
+same analysis without the UI:
+
+```go
+analysis, ok := profiler.AnalyzeRequest(requestID)
+if ok {
+    for _, finding := range analysis.Findings {
+        log.Printf("%s: %s", finding.Code, finding.Title)
+    }
+}
+```
+
+The authenticated viewer endpoint is:
+
+```text
+GET /debug/webpprof/api/requests/{request-id}/analysis
+```
+
 | Integration or API | How to keep the event related |
 | --- | --- |
 | Bun, `database/sql`, go-redis, email, gomail, slog, outgoing HTTP | Pass `r.Context()` to the normal operation |
@@ -290,6 +513,22 @@ type Meta struct {
 | `StartedAt` | Operation start time. Defaults to the current UTC time when empty. |
 | `Duration` | Completed operation duration. Use `time.Since(started)` after the operation finishes. |
 | `Tags` | Searchable integration-specific metadata. Do not put secrets here. |
+
+`ProfileMiddlewareWith` assigns each invocation an ID and propagates it as the
+current parent through `context.Context`. Nested middleware and downstream
+`Log*Context` entities therefore produce a `ParentID` tree automatically. A
+custom integration can create the same relationship explicitly:
+
+```go
+operationID := webpprof.NewID()
+ctx = webpprof.WithParentEntry(ctx, operationID)
+
+// ParentID is inherited from ctx unless Meta.ParentID is already set.
+profiler.LogQueryContext(ctx, webpprof.Query{
+    Meta: webpprof.Meta{StartedAt: startedAt, Duration: elapsed},
+    SQL:  "SELECT ...",
+})
+```
 
 Choose the logging form according to ownership:
 

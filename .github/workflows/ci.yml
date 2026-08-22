@@ -17,5 +17,9 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go mod verify
+      - run: go mod tidy
+      - run: git diff --exit-code -- go.mod go.sum
+      - run: node --check ui/app.js
       - run: go vet ./...
-      - run: go test -race ./... -count=1
+      - run: go test -race -shuffle=on ./... -count=1 -coverprofile=coverage.out
+      - run: go test . -run '^$' -bench BenchmarkEntryStorePutAndList -benchtime=100x

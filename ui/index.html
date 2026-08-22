@@ -29,6 +29,10 @@
         </details>
         <span id="socket-status" class="status offline" aria-live="polite">Offline</span>
         <span id="event-count" class="metric" aria-live="polite">0 events</span>
+        <span id="capacity-status" class="metric capacity-status" aria-live="polite" title="Profiler storage usage">0%</span>
+        <button id="import-session" class="icon-button" type="button" title="Import session JSON" aria-label="Import session JSON"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 20h14"/></svg><span class="sr-only">Import session JSON</span></button>
+        <input id="session-file" class="sr-only" type="file" accept="application/json,.json">
+        <button id="export-session" class="icon-button" type="button" title="Export session JSON" aria-label="Export session JSON"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3M7 8l5-5 5 5M5 20h14"/></svg><span class="sr-only">Export session JSON</span></button>
         <button id="pause" class="icon-button" type="button" title="Pause recording" aria-label="Pause recording"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6v12M16 6v12"/></svg><span class="sr-only">Pause recording</span></button>
         <button id="clear" class="icon-button danger" type="button" title="Clear entries" aria-label="Clear entries"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg><span class="sr-only">Clear entries</span></button>
         <a class="github-link" href="https://github.com/levskiy0/webpprof" target="_blank" rel="noopener noreferrer" title="Open webpprof on GitHub" aria-label="Open webpprof on GitHub">
@@ -49,7 +53,7 @@
     <section id="workspace" class="workspace hidden">
       <aside class="sidebar">
         <nav id="kinds" class="kind-nav" aria-label="Event types"></nav>
-        <div class="sidebar-note"><strong>In-memory</strong><span>Events disappear when this process stops.</span></div>
+        <div id="storage-note" class="sidebar-note"><strong>In-memory</strong><span>Events disappear when this process stops.</span></div>
       </aside>
       <section class="main-workspace">
         <section id="dashboard-screen" class="dashboard-screen"></section>
@@ -58,14 +62,21 @@
             <div class="card-toolbar toolbar">
               <h2 id="screen-title">Requests</h2>
               <div class="search-wrap"><span aria-hidden="true"></span><input id="search" type="search" aria-label="Search profiler events" placeholder="Search entries…"></div>
-              <label id="method-filter"><span>Method</span><select id="method"><option value="">All</option><option value="GET">GET</option><option value="POST">POST</option><option value="PUT">PUT</option><option value="PATCH">PATCH</option><option value="DELETE">DELETE</option><option value="HEAD">HEAD</option><option value="OPTIONS">OPTIONS</option><option value="CONNECT">CONNECT</option><option value="TRACE">TRACE</option></select></label>
-              <label id="status-filter"><span>Status</span><select id="status"><option value="">All</option><option value="class:2">2xx</option><option value="class:3">3xx</option><option value="class:4">4xx</option><option value="class:5">5xx</option></select></label>
-              <label id="level-filter" class="hidden"><span>Level</span><select id="level"><option value="">All</option><option value="trace">TRACE</option><option value="debug">DEBUG</option><option value="info">INFO</option><option value="warn">WARN</option><option value="error">ERROR</option><option value="dpanic">DPANIC</option><option value="panic">PANIC</option><option value="fatal">FATAL</option></select></label>
-              <label id="duration-filter"><span>Duration</span><select id="duration"><option value="0">All</option><option value="1">≥ 1 ms</option><option value="10">≥ 10 ms</option><option value="100">≥ 100 ms</option><option value="500">≥ 500 ms</option></select></label>
+              <button id="filter-toggle" class="filter-toggle" type="button" aria-expanded="false" aria-controls="filters-drawer"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M5.5 10h9M8 15h4"></path></svg><span>Filters</span><b id="filter-count" class="hidden">0</b></button>
+              <section id="filters-drawer" class="filters-drawer hidden" aria-label="Event filters">
+                <header><div><strong>Filter events</strong><span id="filter-summary">All recorded events</span></div><button id="filter-clear" type="button" disabled>Reset</button></header>
+                <div class="filter-controls">
+                  <div id="entity-filters" class="entity-filters" aria-label="Entity filters"></div>
+                  <label id="time-filter"><span>Time</span><select id="time-range"><option value="">All</option><option value="5m">Last 5m</option><option value="15m">Last 15m</option><option value="1h">Last 1h</option><option value="6h">Last 6h</option><option value="24h">Last 24h</option><option value="custom">Custom</option></select></label>
+                  <label id="duration-filter"><span>Duration</span><select id="duration"><option value="0">All</option><option value="1">≥ 1 ms</option><option value="10">≥ 10 ms</option><option value="100">≥ 100 ms</option><option value="500">≥ 500 ms</option></select></label>
+                  <div id="time-custom" class="time-custom hidden"><label><span>From</span><input id="time-from" type="datetime-local" aria-label="Events from"></label><label><span>To</span><input id="time-to" type="datetime-local" aria-label="Events until"></label></div>
+                </div>
+              </section>
             </div>
             <div id="list-heading" class="list-heading"><span>Method</span><span>Path</span><span>Status</span><span class="list-duration">Duration</span><span class="list-time">Happened</span><span></span></div>
             <div id="events" class="events"></div>
             <div id="empty" class="empty">Waiting for matching events…</div>
+            <div id="pagination" class="pagination hidden"><button id="load-more" type="button">Load older events</button><span id="pagination-status"></span></div>
           </section>
         </section>
         <section id="detail-screen" class="detail-screen hidden">

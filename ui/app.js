@@ -1,10 +1,12 @@
-const state={events:new Map(),kind:"request",selected:"",requestTab:"payload",responseTab:"response",relatedTab:"query",screen:"dashboard",paused:false,pending:[],socket:null,reconnect:0,reconnectTimer:0,socketStableTimer:0,runtime:[],queueStats:{sources:[]},watchedTags:new Set()};
+const state={events:new Map(),analyses:new Map(),analysisPending:new Set(),sessionMode:"live",kind:"request",selected:"",requestTab:"payload",responseTab:"response",relatedTab:"query",screen:"dashboard",paused:false,pending:[],socket:null,reconnect:0,reconnectTimer:0,socketStableTimer:0,runtime:[],queueStats:{sources:[]},dashboard:{widgets:[]},dashboardHistory:new Map(),stats:{},hasMore:false,loadingMore:false,watchedTags:new Set(),filters:{}};
+const pageSize=250;
 const kinds=["request","middleware","query","cache","job","email","log","http_call","schedule","exception","event",""];
 const navItems=["dashboard",...kinds];
 const methodFilterKinds=new Set(["request","http_call"]);
-const durationFilterKinds=new Set(["request","middleware","query","job","http_call"]);
+const durationFilterKinds=new Set(["request","middleware","query","cache","job","email","http_call","schedule","event",""]);
+const filterParamKeys=["method","status","operation","connection","database","result","store","queue","transport","host","level","state","type","kind"];
 const sqlKeywords=new Set("ADD ALL ALTER ANALYZE AND AS ASC BETWEEN BY CASE CHECK COLUMN CONSTRAINT CREATE CROSS CURRENT_DATE CURRENT_TIME CURRENT_TIMESTAMP DATABASE DEFAULT DELETE DESC DISTINCT DROP ELSE END EXISTS EXPLAIN FALSE FOREIGN FROM FULL GROUP HAVING IN INDEX INNER INSERT INTERSECT INTO IS JOIN KEY LEFT LIKE LIMIT NATURAL NOT NULL OFFSET ON OR ORDER OUTER PRIMARY REFERENCES RETURNING RIGHT SELECT SET TABLE THEN TRUE UNION UNIQUE UPDATE USING VALUES WHEN WHERE WITH".split(" "));
-const ids=["login","workspace","login-form","login-error","token","socket-status","event-count","pause","clear","tag-watcher","tag-watch-count","tag-watch-clear","tag-watch-search","tag-watch-selected","tag-watch-results-count","tag-watch-options","kinds","search","method-filter","method","status-filter","status","level-filter","level","duration-filter","duration","list-heading","events","empty","detail","dashboard-screen","index-screen","detail-screen","screen-title","back"];
+const ids=["login","workspace","login-form","login-error","token","socket-status","event-count","capacity-status","storage-note","import-session","session-file","export-session","pause","clear","tag-watcher","tag-watch-count","tag-watch-clear","tag-watch-search","tag-watch-selected","tag-watch-results-count","tag-watch-options","kinds","search","filter-toggle","filter-count","filter-clear","filters-drawer","filter-summary","entity-filters","time-filter","time-range","time-custom","time-from","time-to","duration-filter","duration","list-heading","events","empty","pagination","load-more","pagination-status","detail","dashboard-screen","index-screen","detail-screen","screen-title","back"];
 const elements=Object.fromEntries(ids.map(id=>[id,document.getElementById(id)]));
 const base=()=>location.pathname.replace(/\/$/,"");
 
@@ -17,9 +19,15 @@ async function api(path,options={}){
 
 async function load(){
   try{
-    const result=await api("/api/events?limit=1000");
+    const [result,dashboard]=await Promise.all([api(`/api/events?limit=${pageSize}`),api("/api/dashboard")]);
     state.events.clear();
+    state.analyses.clear();
+    state.analysisPending.clear();
+    state.sessionMode="live";
     for(const event of result.events)state.events.set(event.id,event);
+    state.stats=result.stats||{};
+    state.hasMore=Boolean(result.has_more);
+    recordDashboardSnapshot(dashboard);
     restoreLocation();
     showWorkspace();
     renderTagWatcher();
@@ -33,13 +41,29 @@ async function load(){
 
 function bind(){
   elements["login-form"].addEventListener("submit",login);
+  elements["export-session"].addEventListener("click",exportSession);
+  elements["import-session"].addEventListener("click",()=>elements["session-file"].click());
+  elements["session-file"].addEventListener("change",importSession);
   elements.pause.addEventListener("click",togglePause);
   elements.clear.addEventListener("click",clearEvents);
-  elements.search.addEventListener("input",render);
-  elements.method.addEventListener("change",render);
-  elements.status.addEventListener("change",render);
-  elements.level.addEventListener("change",render);
-  elements.duration.addEventListener("change",render);
+  elements["load-more"].addEventListener("click",loadMoreEvents);
+  elements["filter-toggle"].addEventListener("click",toggleFilterDrawer);
+  elements["filter-clear"].addEventListener("click",()=>{
+    resetListFilters();
+    applyListFilters();
+  });
+  elements.search.addEventListener("input",applyListFilters);
+  elements.duration.addEventListener("change",applyListFilters);
+  elements["time-range"].addEventListener("change",applyListFilters);
+  elements["time-from"].addEventListener("change",applyListFilters);
+  elements["time-to"].addEventListener("change",applyListFilters);
+  elements["entity-filters"].addEventListener("change",event=>{
+    const select=event.target.closest("select[data-filter-key]");
+    if(!select)return;
+    if(select.value)state.filters[select.dataset.filterKey]=select.value;
+    else delete state.filters[select.dataset.filterKey];
+    applyListFilters();
+  });
   elements["tag-watch-search"].addEventListener("input",renderTagWatcher);
   elements["tag-watcher"].addEventListener("toggle",()=>{
     if(elements["tag-watcher"].open)elements["tag-watch-search"].focus();
@@ -86,12 +110,38 @@ function bind(){
       copyText(requestRepresentation(request,format)).then(()=>showCopied(requestCopy,`Copy ${requestFormatLabel(format)}`)).catch(()=>requestCopy.setAttribute("aria-label","Could not copy request"));
       return;
     }
+    const harDownload=event.target.closest("[data-download-har]");
+    if(harDownload){
+      const request=state.events.get(state.selected);
+      downloadText(`webpprof-${request?.id||"request"}.har`,requestHAR(request),"application/json");
+      return;
+    }
     const copy=event.target.closest("[data-copy-query]");
     if(copy){
       const query=state.events.get(state.selected);
       copyText(query?.data?.sql||"").then(()=>{
         showCopied(copy,"Copy SQL");
       }).catch(()=>copy.setAttribute("aria-label","Could not copy SQL"));
+      return;
+    }
+    const replayCopy=event.target.closest("[data-copy-query-replay]");
+    if(replayCopy){
+      const query=state.events.get(state.selected);
+      copyText(queryReplayCode(query)).then(()=>showCopied(replayCopy,"Copy Go replay")).catch(()=>replayCopy.setAttribute("aria-label","Could not copy replay"));
+      return;
+    }
+    const planCopy=event.target.closest("[data-copy-query-plan]");
+    if(planCopy){
+      const query=state.events.get(state.selected);
+      copyText(query?.data?.plan?.text||"").then(()=>showCopied(planCopy,"Copy EXPLAIN")).catch(()=>planCopy.setAttribute("aria-label","Could not copy EXPLAIN"));
+      return;
+    }
+    const sourceCopy=event.target.closest("[data-copy-source]");
+    if(sourceCopy){
+      const query=state.events.get(state.selected);
+      const frame=(query?.data?.callsite||[])[Number(sourceCopy.dataset.copySource)];
+      const location=frame?`${frame.file}:${frame.line}`:"";
+      copyText(location).then(()=>showCopied(sourceCopy,"Copy source location")).catch(()=>sourceCopy.setAttribute("aria-label","Could not copy source location"));
       return;
     }
     const tab=event.target.closest("[data-card-tab]");
@@ -114,6 +164,78 @@ function bind(){
     renderKinds();
     render();
   });
+  document.addEventListener("keydown",event=>{
+    if(event.key==="Escape"&&!elements["filters-drawer"].classList.contains("hidden"))setFilterDrawer(false);
+  });
+}
+
+function exportSession(){
+  const snapshot={
+    format:"webpprof-session",
+    version:1,
+    exported_at:new Date().toISOString(),
+    events:[...state.events.values()].sort((left,right)=>(left.cursor||0)-(right.cursor||0)),
+    runtime:state.runtime,
+    queue_stats:state.queueStats,
+    stats:state.stats,
+    dashboard:state.dashboard,
+    analyses:Object.fromEntries(state.analyses)
+  };
+  downloadText(`webpprof-session-${fileTimestamp()}.json`,JSON.stringify(snapshot,null,2),"application/json");
+}
+
+async function importSession(event){
+  const file=event.target.files?.[0];
+  event.target.value="";
+  if(!file)return;
+  try{
+    const snapshot=JSON.parse(await file.text());
+    if(snapshot?.format!=="webpprof-session"||snapshot.version!==1||!Array.isArray(snapshot.events))throw new Error("unsupported session format");
+    const imported=new Map();
+    for(const [index,item] of snapshot.events.entries()){
+      if(!item||typeof item.id!=="string"||typeof item.kind!=="string"||!item.data)continue;
+      imported.set(item.id,{...item,cursor:Number(item.cursor)||index+1});
+    }
+    if(!imported.size)throw new Error("session contains no valid events");
+    state.events=imported;
+    state.analyses=new Map(Object.entries(snapshot.analyses&&typeof snapshot.analyses==="object"?snapshot.analyses:{}));
+    state.analysisPending=new Set();
+    state.sessionMode="imported";
+    state.runtime=Array.isArray(snapshot.runtime)?snapshot.runtime:[];
+    state.queueStats=snapshot.queue_stats&&typeof snapshot.queue_stats==="object"?snapshot.queue_stats:{sources:[]};
+    state.dashboard=snapshot.dashboard&&typeof snapshot.dashboard==="object"?snapshot.dashboard:state.dashboard;
+    state.dashboardHistory=new Map();
+    recordDashboardSnapshot(state.dashboard);
+    state.stats=snapshot.stats&&typeof snapshot.stats==="object"?snapshot.stats:{events:imported.size,storage:"imported"};
+    state.hasMore=false;
+    state.paused=true;
+    state.pending=[];
+    state.selected="";
+    state.screen="dashboard";
+    resetListFilters();
+    updatePauseButton();
+    renderTagWatcher();
+    renderKinds();
+    syncLocation();
+    render();
+  }catch(error){
+    alert(`Could not import session: ${error.message}`);
+  }
+}
+
+function downloadText(filename,value,type){
+  const url=URL.createObjectURL(new Blob([value],{type}));
+  const link=document.createElement("a");
+  link.href=url;
+  link.download=filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),0);
+}
+
+function fileTimestamp(){
+  return new Date().toISOString().replace(/[:.]/g,"-");
 }
 
 function renderKinds(){
@@ -132,6 +254,7 @@ function renderKinds(){
           state.screen="index";
         }
         state.selected="";
+        resetListFilters();
         syncLocation("push");
         renderKinds();
         render();
@@ -201,6 +324,8 @@ function connect(){
     if(update.type==="connected"||update.type==="stats.updated")receiveStats(update);
     if(update.type==="events.cleared"){
       state.events.clear();
+      state.analyses.clear();
+      state.analysisPending.clear();
       state.selected="";
       renderTagWatcher();
       renderKinds();
@@ -258,9 +383,30 @@ function scheduleReconnect(){
 }
 
 function receiveStats(update){
+  if(update.stats)state.stats=update.stats;
   if(update.runtime)recordRuntime(update.runtime);
   if(update.queues)state.queueStats=update.queues;
+  if(update.dashboard)recordDashboardSnapshot(update.dashboard);
+  updateCapacityStatus();
   if(state.screen==="dashboard")updateDashboard();
+}
+
+function recordDashboardSnapshot(snapshot){
+  if(!snapshot||!Array.isArray(snapshot.widgets))return;
+  state.dashboard=snapshot;
+  const recordedAt=Date.parse(snapshot.recorded_at)||Date.now();
+  for(const widget of snapshot.widgets){
+    if(widget.kind==="custom_metric"&&widget.metric)recordDashboardPoint(widget.id,recordedAt,widget.metric.value,widget.metric.error);
+    if(widget.kind==="custom_chart")for(const series of widget.series||[])recordDashboardPoint(`${widget.id}:${series.id}`,recordedAt,series.value,series.error);
+  }
+}
+
+function recordDashboardPoint(key,recordedAt,value,error){
+  const history=state.dashboardHistory.get(key)||[];
+  if(history.at(-1)?.recordedAt===recordedAt)return;
+  history.push({recordedAt,value:Number(value)||0,error:error||""});
+  if(history.length>60)history.shift();
+  state.dashboardHistory.set(key,history);
 }
 
 function recordRuntime(sample){
@@ -279,6 +425,7 @@ function receive(event){
     return;
   }
   state.events.set(event.id,event);
+  invalidateRequestAnalysis(event);
   renderTagWatcher();
   scheduleRender();
 }
@@ -301,6 +448,7 @@ function togglePause(){
   updatePauseButton();
   if(!state.paused){
     for(const event of state.pending)state.events.set(event.id,event);
+    for(const event of state.pending)invalidateRequestAnalysis(event);
     state.pending=[];
     renderTagWatcher();
     renderKinds();
@@ -320,19 +468,79 @@ async function clearEvents(){
   if(!confirm("Clear all profiler events?"))return;
   await api("/api/events",{method:"DELETE"});
   state.events.clear();
+  state.analyses.clear();
+  state.analysisPending.clear();
+  state.hasMore=false;
+  state.stats={...state.stats,events:0,bytes:0};
   state.selected="";
   renderTagWatcher();
   renderKinds();
   render();
 }
 
+async function loadMoreEvents(){
+  if(state.loadingMore||!state.hasMore)return;
+  const cursors=[...state.events.values()].map(event=>Number(event.cursor)||0).filter(Boolean);
+  const before=Math.min(...cursors);
+  if(!Number.isFinite(before))return;
+  state.loadingMore=true;
+  renderPagination();
+  try{
+    const result=await api(`/api/events?limit=${pageSize}&before=${before}`);
+    for(const event of result.events||[])state.events.set(event.id,event);
+    state.stats=result.stats||state.stats;
+    state.hasMore=Boolean(result.has_more);
+    renderTagWatcher();
+    renderKinds();
+    render();
+  }finally{
+    state.loadingMore=false;
+    renderPagination();
+  }
+}
+
 function filtered(){
   const search=elements.search.value.trim().toLowerCase();
-  const method=elements.method.value;
-  const status=elements.status.value;
-  const level=elements.level.value;
   const minimum=durationFilterKinds.has(state.kind)?Number(elements.duration.value)*1000000:0;
-  return visibleEvents().filter(event=>(!state.kind||event.kind===state.kind)&&eventDuration(event)>=minimum&&matchesContextFilters(event,method,status,level)&&(!search||`${event.kind} ${JSON.stringify(event.data)}`.toLowerCase().includes(search))).sort((a,b)=>b.cursor-a.cursor);
+  return visibleEvents().filter(event=>(!state.kind||event.kind===state.kind)&&matchesTimeRange(event)&&eventDuration(event)>=minimum&&matchesEntityFilters(event)&&(!search||`${event.kind} ${JSON.stringify(event.data)}`.toLowerCase().includes(search))).sort((a,b)=>b.cursor-a.cursor);
+}
+
+function matchesTimeRange(event){
+  const range=elements["time-range"].value;
+  if(!range)return true;
+  const happened=Date.parse(event.started_at);
+  if(!Number.isFinite(happened))return false;
+  if(range==="custom"){
+    const from=elements["time-from"].value?new Date(elements["time-from"].value).getTime():Number.NEGATIVE_INFINITY;
+    const to=elements["time-to"].value?new Date(elements["time-to"].value).getTime():Number.POSITIVE_INFINITY;
+    return happened>=from&&happened<=to;
+  }
+  const windows={"5m":5*60e3,"15m":15*60e3,"1h":60*60e3,"6h":6*60*60e3,"24h":24*60*60e3};
+  return happened>=Date.now()-(windows[range]||0);
+}
+
+function applyListFilters(){
+  syncLocation();
+  render();
+}
+
+function toggleFilterDrawer(){
+  setFilterDrawer(elements["filters-drawer"].classList.contains("hidden"));
+}
+
+function setFilterDrawer(isOpen){
+  elements["filters-drawer"].classList.toggle("hidden",!isOpen);
+  elements["filter-toggle"].setAttribute("aria-expanded",String(isOpen));
+  elements["filter-toggle"].classList.toggle("active",isOpen);
+}
+
+function resetListFilters(){
+  state.filters={};
+  elements.search.value="";
+  elements.duration.value="0";
+  elements["time-range"].value="";
+  elements["time-from"].value="";
+  elements["time-to"].value="";
 }
 
 function visibleEvents(){
@@ -389,33 +597,51 @@ function renderTagWatcher(){
 
 function updateEventCount(){
   const visible=visibleEvents().length;
-  elements["event-count"].textContent=state.watchedTags.size?`${visible}/${state.events.size} events`:`${state.events.size} events`;
+  const total=Math.max(state.events.size,Number(state.stats.events)||0);
+  elements["event-count"].textContent=state.watchedTags.size?`${visible}/${state.events.size} loaded`:(total>state.events.size?`${state.events.size}/${total} events`:`${state.events.size} events`);
+  updateCapacityStatus();
 }
 
-function matchesContextFilters(event,method,status,level){
+function updateCapacityStatus(){
+  const eventRatio=Number(state.stats.events||0)/Math.max(1,Number(state.stats.max_events)||1);
+  const byteRatio=Number(state.stats.bytes||0)/Math.max(1,Number(state.stats.max_bytes)||1);
+  const ratio=Math.max(eventRatio,byteRatio);
+  const level=ratio>=.9?"danger":ratio>=.7?"warning":"";
+  elements["capacity-status"].textContent=`${Math.round(ratio*100)}%`;
+  elements["capacity-status"].className=`metric capacity-status${level?` ${level}`:""}`;
+  elements["capacity-status"].title=`Storage ${bytes(state.stats.bytes||0)} / ${bytes(state.stats.max_bytes||0)} · ${state.stats.events||0} / ${state.stats.max_events||0} events · ${state.stats.evicted_events||0} evicted · ${state.stats.dropped_events||0} dropped`;
+  const disk=state.stats.storage==="disk";
+  elements["storage-note"].innerHTML=`<strong>${disk?"Disk journal":"In-memory"}</strong><span>${escapeHTML(state.stats.storage_error||(disk?"Events survive process restarts.":"Events disappear when this process stops."))}</span>`;
+  elements["storage-note"].classList.toggle("danger",Boolean(state.stats.storage_error));
+}
+
+function matchesEntityFilters(event){
   const data=event.data||{};
-  if(method&&methodFilterKinds.has(state.kind)&&String(data.method||"").toUpperCase()!==method)return false;
-  if(status&&state.kind==="request"){
-    const code=Number(data.status)||0;
-    if(status.startsWith("class:")&&Math.floor(code/100)!==Number(status.slice(6)))return false;
-    if(status.startsWith("code:")&&code!==Number(status.slice(5)))return false;
+  for(const definition of filterDefinitions(state.kind)){
+    const selected=state.filters[definition.key];
+    if(!selected)continue;
+    const value=definition.value(data,event);
+    if(definition.httpStatus&&selected.startsWith("class:")){
+      if(Math.floor(Number(value)/100)!==Number(selected.slice(6)))return false;
+      continue;
+    }
+    if(String(value)!==selected)return false;
   }
-  if(level&&state.kind==="log"&&normalizedLogLevel(data.level)!==level)return false;
   return true;
 }
 
 function render(){
-  renderRequestStatusOptions();
+  renderEntityFilters();
   const events=state.screen==="index"?filtered():[];
   updateEventCount();
   elements["screen-title"].textContent=kindLabel(state.kind);
   renderListHeading();
-  elements["method-filter"].classList.toggle("hidden",!methodFilterKinds.has(state.kind));
-  elements["status-filter"].classList.toggle("hidden",state.kind!=="request");
-  elements["level-filter"].classList.toggle("hidden",state.kind!=="log");
+  elements["time-custom"].classList.toggle("hidden",elements["time-range"].value!=="custom");
   elements["duration-filter"].classList.toggle("hidden",!durationFilterKinds.has(state.kind));
+  updateFilterPanel();
   elements.empty.classList.toggle("hidden",events.length>0);
   elements.events.replaceChildren(...events.map(row));
+  renderPagination();
   if(state.selected&&!state.events.has(state.selected))state.selected="";
   elements["dashboard-screen"].classList.toggle("hidden",state.screen!=="dashboard");
   elements["index-screen"].classList.toggle("hidden",state.screen!=="index");
@@ -424,24 +650,73 @@ function render(){
   if(state.screen==="detail")renderDetail(state.events.get(state.selected));
 }
 
-function renderRequestStatusOptions(){
-  const selected=elements.status.value;
-  const counts=new Map();
-  for(const event of visibleEvents()){
-    if(event.kind!=="request")continue;
-    const code=Number((event.data||{}).status)||0;
-    if(code>=100&&code<=599)counts.set(code,(counts.get(code)||0)+1);
+function updateFilterPanel(){
+  const active=[];
+  for(const definition of filterDefinitions(state.kind)){
+    const value=state.filters[definition.key];
+    if(value)active.push(`${definition.label}: ${value.startsWith("class:")?`${value.slice(6)}xx`:value}`);
   }
-  if(selected.startsWith("code:")){
-    const code=Number(selected.slice(5));
-    if(code>=100&&code<=599&&!counts.has(code))counts.set(code,0);
+  const range=elements["time-range"].value;
+  if(range){
+    const label=elements["time-range"].selectedOptions[0]?.textContent||range;
+    active.push(`Time: ${label}`);
   }
-  const statuses=[...counts].sort((left,right)=>left[0]-right[0]);
-  const signature=JSON.stringify(statuses);
-  if(elements.status.dataset.signature===signature)return;
-  elements.status.dataset.signature=signature;
-  elements.status.innerHTML=`<option value="">All</option><optgroup label="Status class"><option value="class:2">2xx · Success</option><option value="class:3">3xx · Redirect</option><option value="class:4">4xx · Client error</option><option value="class:5">5xx · Server error</option></optgroup>${statuses.length?`<optgroup label="Recorded codes">${statuses.map(([code,count])=>`<option value="code:${code}">${code} · ${count}</option>`).join("")}</optgroup>`:""}`;
-  elements.status.value=selected;
+  if(durationFilterKinds.has(state.kind)&&elements.duration.value!=="0")active.push(`Duration: ≥ ${elements.duration.value} ms`);
+  elements["filter-count"].textContent=String(active.length);
+  elements["filter-count"].classList.toggle("hidden",active.length===0);
+  elements["filter-clear"].disabled=active.length===0;
+  elements["filter-summary"].textContent=active.length?active.join(" · "):"All recorded events";
+  elements["filter-toggle"].classList.toggle("has-filters",active.length>0);
+}
+
+function renderPagination(){
+  elements.pagination.classList.toggle("hidden",!state.hasMore&&!state.loadingMore);
+  elements["load-more"].disabled=state.loadingMore;
+  elements["load-more"].textContent=state.loadingMore?"Loading…":"Load older events";
+  elements["pagination-status"].textContent=`${state.events.size} loaded${state.stats.events?` of ${state.stats.events}`:""}`;
+}
+
+function filterDefinitions(kind){
+  const text=(key,label,normalize=value=>String(value||""))=>({key,label,value:data=>normalize(data[key])});
+  const httpStatus={key:"status",label:"Status",httpStatus:true,value:data=>String(Number(data.status)||0)};
+  const definitions={
+    request:[text("method","Method",value=>String(value||"").toUpperCase()),httpStatus],
+    middleware:[text("state","State")],
+    query:[text("operation","Operation",value=>String(value||"SQL").toUpperCase()),text("connection","Connection",value=>String(value||"default")),text("database","Database",value=>String(value||"default")),{key:"result",label:"Result",value:data=>data.error?"error":"ok",fixed:[["ok","OK"],["error","Error"]]}],
+    cache:[text("operation","Operation",value=>String(value||"cache").toUpperCase()),text("store","Store",value=>String(value||"default")),{key:"result",label:"Result",value:data=>data.error?"error":data.hit?"hit":"miss",fixed:[["hit","Hit"],["miss","Miss"],["error","Error"]]}],
+    job:[text("queue","Queue",value=>String(value||"default")),text("state","State",value=>String(value||"recorded")),text("connection","Connection",value=>String(value||"default"))],
+    email:[text("transport","Transport",value=>String(value||"mail")),text("status","Status",value=>String(value||"recorded"))],
+    log:[{key:"level",label:"Level",value:data=>normalizedLogLevel(data.level||"log"),fixed:[["trace","TRACE"],["debug","DEBUG"],["info","INFO"],["warn","WARN"],["error","ERROR"],["dpanic","DPANIC"],["panic","PANIC"],["fatal","FATAL"]]}],
+    http_call:[text("method","Method",value=>String(value||"HTTP").toUpperCase()),{key:"host",label:"Host",value:data=>{
+      try{return new URL(data.url||"").host||"unknown";}catch{return"unknown";}
+    }},httpStatus],
+    schedule:[text("state","State",value=>String(value||"recorded"))],
+    exception:[text("type","Type",value=>String(value||"Exception"))],
+    event:[text("kind","Kind",value=>String(value||"event")),text("status","Status",value=>String(value||"recorded"))]
+  };
+  return definitions[kind]||[];
+}
+
+function renderEntityFilters(){
+  const definitions=filterDefinitions(state.kind);
+  const source=visibleEvents().filter(event=>!state.kind||event.kind===state.kind);
+  elements["entity-filters"].classList.toggle("hidden",definitions.length===0);
+  elements["entity-filters"].innerHTML=definitions.map(definition=>{
+    const counts=new Map();
+    for(const event of source){
+      const value=String(definition.value(event.data||{},event));
+      if(value&&value!=="0")counts.set(value,(counts.get(value)||0)+1);
+    }
+    const selected=state.filters[definition.key]||"";
+    if(selected&&!selected.startsWith("class:")&&!counts.has(selected))counts.set(selected,0);
+    const recorded=[...counts].sort((left,right)=>definition.httpStatus?Number(left[0])-Number(right[0]):right[1]-left[1]||left[0].localeCompare(right[0])).slice(0,100);
+    const fixed=definition.fixed||[];
+    const fixedValues=new Set(fixed.map(([value])=>value));
+    const fixedOptions=fixed.map(([value,label])=>`<option value="${escapeHTML(value)}"${selected===value?" selected":""}>${escapeHTML(label)}${counts.has(value)?` · ${counts.get(value)}`:""}</option>`).join("");
+    const recordedOptions=recorded.filter(([value])=>!fixedValues.has(value)).map(([value,count])=>`<option value="${escapeHTML(value)}"${selected===value?" selected":""}>${escapeHTML(value)} · ${count}</option>`).join("");
+    const statusClasses=definition.httpStatus?'<optgroup label="Status class"><option value="class:2"'+(selected==="class:2"?' selected':'')+'>2xx · Success</option><option value="class:3"'+(selected==="class:3"?' selected':'')+'>3xx · Redirect</option><option value="class:4"'+(selected==="class:4"?' selected':'')+'>4xx · Client error</option><option value="class:5"'+(selected==="class:5"?' selected':'')+'>5xx · Server error</option></optgroup>':"";
+    return`<label><span>${escapeHTML(definition.label)}</span><select data-filter-key="${escapeHTML(definition.key)}"><option value="">All</option>${statusClasses}${fixedOptions}${recordedOptions}</select></label>`;
+  }).join("");
 }
 
 function renderListHeading(){
@@ -451,33 +726,46 @@ function renderListHeading(){
 }
 
 function renderDashboard(){
-  if(!elements["dashboard-screen"].querySelector("[data-dashboard-root]")){
+  const widgets=dashboardWidgets();
+  const signature=JSON.stringify(widgets.map(widget=>[widget.id,widget.kind,widget.builtin,widget.title,widget.description,widget.span,widget.metric?.sparkline,widget.metric?.mode,(widget.series||[]).map(series=>series.id),(widget.counters||[]).map(counter=>counter.id)]));
+  const current=elements["dashboard-screen"].querySelector("[data-dashboard-root]");
+  if(!current||current.dataset.signature!==signature){
     elements["dashboard-screen"].innerHTML=`
-      <div class="dashboard-root" data-dashboard-root>
+      <div class="dashboard-root" data-dashboard-root data-signature="${escapeHTML(signature)}">
         <header class="dashboard-heading">
           <div><h2>Dashboard</h2><p>Runtime health and recorded application activity.</p></div>
           <div class="dashboard-window"><span class="live-pulse"></span><strong>Live · 2 minute window</strong><span data-dashboard-uptime>Collecting runtime data</span></div>
         </header>
-        <section class="dashboard-metrics">
-          ${dashboardMetricShell("cpu","CPU usage")}
-          ${dashboardMetricShell("memory","Go memory")}
-          ${dashboardMetricShell("requests","HTTP requests")}
-          ${dashboardMetricShell("queries","Database queries")}
-          ${dashboardMetricShell("cache","Cache hit rate")}
-          ${dashboardMetricShell("goroutines","Goroutines")}
-        </section>
-        <section class="dashboard-charts">
-          <article class="dashboard-panel mix-panel"><header><div><h3>Event mix</h3><span>Events retained in memory</span></div><small>Recorded window</small></header><div class="mix-list" data-dashboard-mix></div></article>
-          <article class="dashboard-panel queue-panel"><header><div><h3>Queue health</h3><span>Backlog and worker capacity by queue</span></div><small data-dashboard-queue-summary>Waiting for a stats source</small></header><div data-dashboard-queues></div></article>
-          <article class="dashboard-panel slow-panel"><header><div><h3>Slowest operations</h3><span>Requests, queries and HTTP calls</span></div><small>Click to inspect</small></header><div class="slow-list" data-dashboard-slow></div></article>
-        </section>
+        <section class="dashboard-grid">${widgets.map(dashboardWidgetShell).join("")||'<div class="dashboard-panel-empty dashboard-empty">No dashboard widgets configured.</div>'}</section>
       </div>`;
   }
   updateDashboard();
 }
 
-function dashboardMetricShell(key,label){
-  return`<article class="dashboard-metric"><header><span>${escapeHTML(label)}</span><strong data-dashboard-value="${key}">—</strong></header><div class="dashboard-metric-chart" data-dashboard-chart="${key}"></div><footer data-dashboard-meta="${key}">Collecting data</footer></article>`;
+function dashboardWidgets(){
+  return Array.isArray(state.dashboard?.widgets)?state.dashboard.widgets:[];
+}
+
+function dashboardWidgetShell(widget){
+  const span=Math.max(1,Math.min(4,Number(widget.span)||1));
+  const attributes=`data-widget-id="${escapeHTML(widget.id||"")}" data-dashboard-span="${span}"`;
+  if(widget.kind==="metric")return dashboardMetricShell(widget.builtin,widget.title,widget.description,attributes,true);
+  if(widget.kind==="custom_metric")return dashboardMetricShell(widget.id,widget.title,widget.description,attributes,Boolean(widget.metric?.sparkline),true);
+  if(widget.kind==="event_mix")return dashboardPanelShell(widget,attributes,"Recorded window",'<div class="mix-list" data-dashboard-mix></div>',"mix-panel");
+  if(widget.kind==="queue_health")return dashboardPanelShell(widget,attributes,"Waiting for a stats source",'<div data-dashboard-queues></div>',"queue-panel",'data-dashboard-queue-summary');
+  if(widget.kind==="slowest_operations")return dashboardPanelShell(widget,attributes,"Click to inspect",'<div class="slow-list" data-dashboard-slow></div>',"slow-panel");
+  if(widget.kind==="custom_chart")return dashboardPanelShell(widget,attributes,"Live series",`<div class="custom-chart" data-dashboard-custom-chart="${escapeHTML(widget.id)}"></div>`,"custom-chart-panel");
+  if(widget.kind==="counter_grid")return dashboardPanelShell(widget,attributes,"Latest sample",`<div class="custom-counter-grid" data-dashboard-counter-grid="${escapeHTML(widget.id)}"></div>`,"counter-grid-panel");
+  return"";
+}
+
+function dashboardMetricShell(key,label,description,attributes,showChart,isCustom=false){
+  const chart=showChart?`<div class="dashboard-metric-chart" data-dashboard-chart="${escapeHTML(key)}"></div>`:"";
+  return`<article class="dashboard-widget dashboard-metric${showChart?"":" no-chart"}" ${attributes}><header><span>${escapeHTML(label||key)}</span><strong data-dashboard-value="${escapeHTML(key)}">—</strong></header>${chart}<footer data-dashboard-meta="${escapeHTML(key)}">${escapeHTML(description||"Collecting data")}</footer>${isCustom?'<span class="sr-only">Custom metric</span>':""}</article>`;
+}
+
+function dashboardPanelShell(widget,attributes,note,body,className,noteAttribute=""){
+  return`<article class="dashboard-widget dashboard-panel ${className}" ${attributes}><header><div><h3>${escapeHTML(widget.title||widget.id)}</h3>${widget.description?`<span>${escapeHTML(widget.description)}</span>`:""}</div><small ${noteAttribute}>${escapeHTML(note)}</small></header>${body}</article>`;
 }
 
 function updateDashboard(){
@@ -508,6 +796,80 @@ function updateDashboard(){
   setDashboardText("[data-dashboard-queue-summary]",queues.summary);
   setDashboardHTML("[data-dashboard-queues]",queues.html);
   setDashboardHTML("[data-dashboard-slow]",slowOperationRows());
+  for(const widget of dashboardWidgets()){
+    if(widget.kind==="custom_metric")updateCustomDashboardMetric(widget);
+    if(widget.kind==="custom_chart")setDashboardHTML(`[data-dashboard-custom-chart="${cssEscape(widget.id)}"]`,customDashboardChart(widget));
+    if(widget.kind==="counter_grid")setDashboardHTML(`[data-dashboard-counter-grid="${cssEscape(widget.id)}"]`,customCounterGrid(widget));
+  }
+}
+
+function updateCustomDashboardMetric(widget){
+  const metric=widget.metric||{};
+  const values=dashboardMetricValues(widget.id,metric.mode);
+  const current=values.at(-1)??0;
+  const color=dashboardColor(metric.color,0);
+  const graph=metric.sparkline?sparkline(values,color,180,58):"";
+  const meta=metric.error||widget.description||(metric.mode==="rate"?"Change per second":"Latest sample");
+  updateDashboardMetric(widget.id,metric.error?"—":formatDashboardValue(current,metric.format,metric.unit,metric.mode),meta,graph);
+}
+
+function dashboardMetricValues(key,mode="value"){
+  const history=(state.dashboardHistory.get(key)||[]).filter(point=>!point.error);
+  if(mode!=="rate")return history.map(point=>point.value);
+  const rates=[];
+  for(let index=1;index<history.length;index++){
+    const elapsed=(history[index].recordedAt-history[index-1].recordedAt)/1000;
+    const delta=history[index].value-history[index-1].value;
+    rates.push(elapsed>0&&delta>=0?delta/elapsed:0);
+  }
+  return rates.length?rates:[0];
+}
+
+function customDashboardChart(widget){
+  const series=(widget.series||[]).map((item,index)=>({...item,color:dashboardColor(item.color,index),values:dashboardMetricValues(`${widget.id}:${item.id}`)}));
+  if(!series.length)return'<div class="dashboard-panel-empty">No chart series configured.</div>';
+  const width=720;
+  const height=176;
+  const padding=12;
+  const all=series.flatMap(item=>item.values);
+  const maximum=Math.max(1,...all);
+  const minimum=Math.min(0,...all);
+  const range=Math.max(1,maximum-minimum);
+  const paths=series.map(item=>{
+    const values=item.values.length>1?item.values:[item.values[0]||0,item.values[0]||0];
+    const points=values.map((value,index)=>`${(padding+index*(width-padding*2)/(values.length-1)).toFixed(2)},${(height-padding-(value-minimum)/range*(height-padding*2)).toFixed(2)}`).join(" ");
+    return`<polyline points="${points}" fill="none" stroke="${item.color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></polyline>`;
+  }).join("");
+  const legend=series.map(item=>`<span><svg viewBox="0 0 8 8" aria-hidden="true"><circle cx="4" cy="4" r="4" fill="${item.color}"></circle></svg>${escapeHTML(item.label||item.id)} <strong>${escapeHTML(formatDashboardValue(item.value,widget.format,widget.unit))}</strong>${item.error?`<em title="${escapeHTML(item.error)}">Error</em>`:""}</span>`).join("");
+  return`<div class="custom-chart-legend">${legend}</div><svg class="custom-chart-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHTML(widget.title||"Custom chart")}"><path class="custom-chart-grid" d="M12 44H708M12 88H708M12 132H708"></path>${paths}</svg>`;
+}
+
+function customCounterGrid(widget){
+  const counters=widget.counters||[];
+  if(!counters.length)return'<div class="dashboard-panel-empty">No counters configured.</div>';
+  return counters.map(counter=>`<div class="custom-counter${counter.error?" has-error":""}"${counter.error?` title="${escapeHTML(counter.error)}"`:""}><span>${escapeHTML(counter.label||counter.id)}</span><strong>${escapeHTML(counter.error?"—":formatDashboardValue(counter.value,counter.format,counter.unit))}</strong></div>`).join("");
+}
+
+function formatDashboardValue(value,format="number",unit="",mode="value"){
+  const number=Number(value);
+  if(!Number.isFinite(number))return"—";
+  let formatted;
+  if(format==="bytes")formatted=bytes(number);
+  else if(format==="percent")formatted=percent(number);
+  else if(format==="duration")formatted=duration(number);
+  else formatted=new Intl.NumberFormat(undefined,{maximumFractionDigits:2}).format(number);
+  const suffix=unit||mode==="rate"?unit||"/s":"";
+  return suffix?`${formatted} ${suffix}`:formatted;
+}
+
+function dashboardColor(value,index){
+  const color=String(value||"").trim();
+  if(/^#[0-9a-f]{3}([0-9a-f]{3})?$/i.test(color))return color;
+  return["#6266d6","#17a36d","#d58435","#ba4a52","#2689a8"][index%5];
+}
+
+function cssEscape(value){
+  return CSS.escape(String(value||""));
 }
 
 function updateDashboardMetric(key,value,meta,chart){
@@ -665,7 +1027,8 @@ function eventDuration(event){
 
 function isFailure(event){
   const data=event.data||{};
-  return Boolean(data.error||data.status>=500||["failed","dispatch_failed","panicked"].includes(data.state));
+  const status=String(data.status||"").toLowerCase();
+  return Boolean(data.error||Number(data.status)>=500||["failed","bounced","rejected"].includes(status)||["failed","dispatch_failed","panicked"].includes(data.state));
 }
 
 function ratePerMinute(count){
@@ -725,9 +1088,11 @@ function restoreLocation(){
       state.kind=view==="all"?"":kinds.includes(view)?view:"request";
       state.screen="index";
     }
+    restoreListFilters(params);
     return;
   }
   state.kind=view==="all"?"":kinds.includes(view)?view:state.events.get(entry).kind;
+  restoreListFilters(params);
   state.selected=entry;
   const tab=params.get("tab")||"";
   if(tab==="request")state.requestTab="payload";
@@ -737,11 +1102,32 @@ function restoreLocation(){
   state.screen="detail";
 }
 
+function restoreListFilters(params){
+  state.filters={};
+  for(const definition of filterDefinitions(state.kind)){
+    const value=params.get(definition.key)||"";
+    if(value)state.filters[definition.key]=value;
+  }
+  elements.search.value=params.get("q")||"";
+  const durationValue=params.get("duration")||"0";
+  elements.duration.value=[...elements.duration.options].some(option=>option.value===durationValue)?durationValue:"0";
+  const range=params.get("range")||"";
+  elements["time-range"].value=[...elements["time-range"].options].some(option=>option.value===range)?range:"";
+  elements["time-from"].value=params.get("from")||"";
+  elements["time-to"].value=params.get("to")||"";
+}
+
 function syncLocation(mode="replace"){
   const url=new URL(location.href);
   url.searchParams.delete("entry");
   url.searchParams.delete("tab");
   url.searchParams.delete("tag");
+  url.searchParams.delete("q");
+  url.searchParams.delete("duration");
+  url.searchParams.delete("range");
+  url.searchParams.delete("from");
+  url.searchParams.delete("to");
+  for(const key of filterParamKeys)url.searchParams.delete(key);
   for(const tag of [...state.watchedTags].sort())url.searchParams.append("tag",tag);
   if(state.screen==="detail"&&state.selected){
     url.searchParams.set("entry",state.selected);
@@ -750,6 +1136,20 @@ function syncLocation(mode="replace"){
   }else{
     url.searchParams.set("view",state.screen==="dashboard"?"dashboard":state.kind||"all");
   }
+  if(state.screen!=="dashboard"){
+    const query=elements.search.value.trim();
+    if(query)url.searchParams.set("q",query);
+    if(elements.duration.value&&elements.duration.value!=="0")url.searchParams.set("duration",elements.duration.value);
+    if(elements["time-range"].value)url.searchParams.set("range",elements["time-range"].value);
+    if(elements["time-range"].value==="custom"){
+      if(elements["time-from"].value)url.searchParams.set("from",elements["time-from"].value);
+      if(elements["time-to"].value)url.searchParams.set("to",elements["time-to"].value);
+    }
+    for(const definition of filterDefinitions(state.kind)){
+      const value=state.filters[definition.key];
+      if(value)url.searchParams.set(definition.key,value);
+    }
+  }
   history[mode==="push"?"pushState":"replaceState"](null,"",url);
 }
 
@@ -757,7 +1157,7 @@ function row(event){
   const button=document.createElement("button");
   const status=statusFor(event);
   const layout=listLayout(state.kind);
-  const badge=listBadge(event);
+  const badge=layout.badge?listBadge(event):null;
   button.type="button";
   button.className=`event-row${listLayoutClasses(layout)}${state.selected===event.id?" active":""}`;
   button.dataset.id=event.id;
@@ -779,7 +1179,7 @@ function listLayout(kind){
     http_call:{badge:"Method",entry:"URL",status:"Status",duration:true},
     schedule:{badge:"",entry:"Task",status:"State",duration:true},
     exception:{badge:"Type",entry:"Message",status:"",duration:false,wideBadge:true},
-    event:{badge:"Kind",entry:"Event",status:"Status",duration:true}
+    event:{badge:"",entry:"Event",status:"Status",duration:true}
   };
   return layouts[kind]||layouts[""];
 }
@@ -806,7 +1206,6 @@ function listBadge(event){
     return{label:level.toUpperCase(),className:`method-level method-level-${badgeToken(level)}`};
   }
   if(state.kind==="exception")return{label:data.type||"Exception",className:"method-exception-type"};
-  if(state.kind==="event")return{label:data.kind||"event",className:"method-event-kind"};
   return null;
 }
 
@@ -823,24 +1222,21 @@ function eventPreview(event){
   const data=event.data||{};
   if(event.kind==="request")return`<span class="event-main entity-preview"><strong>${escapeHTML(requestTarget(data))}</strong>${inlineTags(event.tags)}</span>`;
   let content;
-  if(state.kind==="middleware")content={title:data.name||"Middleware",subtitle:"Inclusive timing"};
-  else if(state.kind==="query")content={title:compactQuery(data.sql||""),full:data.sql||"",subtitle:data.connection||data.driver||"default",code:true};
-  else if(state.kind==="cache")content={title:data.key||"Cache operation",subtitle:data.store||"default",code:true};
-  else if(state.kind==="job")content={title:data.name||"Job",subtitle:[data.connection,data.attempt?`attempt ${data.attempt}`:""].filter(Boolean).join(" · ")||"Queued job"};
-  else if(state.kind==="email")content={title:data.subject||"Email",subtitle:(data.to||[]).map(address).join(", ")||"No recipients"};
-  if(state.kind==="log"){
-    const fieldCount=Object.keys(data.fields||{}).length;
-    content={title:data.message||"Log entry",subtitle:fieldCount?`${fieldCount} structured ${plural(fieldCount,"field","fields")}`:"Plain log message"};
-  }
-  else if(state.kind==="http_call")content={title:data.url||"HTTP call",subtitle:data.status?`Status ${data.status}`:"Outgoing request"};
-  else if(state.kind==="schedule")content={title:data.name||"Scheduled task",subtitle:data.payload?"Payload captured":"No payload"};
-  else if(state.kind==="exception")content={title:data.message||"Exception",subtitle:data.stack?"Stack captured":"No stack captured"};
-  else if(state.kind==="event")content={title:data.name||data.summary||"Event",subtitle:data.summary&&data.summary!==data.name?data.summary:"Application event"};
-  return entityPreview(content||relationContent(event.kind,event,data),"event-main",event.tags,false);
+  if(state.kind==="middleware")content={title:data.name||"Middleware"};
+  else if(state.kind==="query")content={title:compactQuery(data.sql||""),full:data.sql||"",code:true};
+  else if(state.kind==="cache")content={title:data.key||"Cache operation",code:true};
+  else if(state.kind==="job")content={title:data.name||"Job"};
+  else if(state.kind==="email")content={title:data.subject||"Email"};
+  if(state.kind==="log")content={title:data.message||"Log entry"};
+  else if(state.kind==="http_call")content={title:data.url||"HTTP call"};
+  else if(state.kind==="schedule")content={title:data.name||"Scheduled task"};
+  else if(state.kind==="exception")content={title:data.message||"Exception"};
+  else if(state.kind==="event")content={title:data.name||data.summary||"Event"};
+  return entityPreview(content||relationContent(event.kind,event,data),"event-main",event.tags,event.kind==="event"?data.kind||"event":"");
 }
 
-function entityPreview(content,className="",tags,showSubtitle=true){
-  return`<span class="entity-preview ${className}">${content.code?`<code>${escapeHTML(content.title)}</code>`:`<strong>${escapeHTML(content.title)}</strong>`}${showSubtitle&&content.subtitle?`<small>${escapeHTML(content.subtitle)}</small>`:""}${inlineTags(tags)}</span>`;
+function entityPreview(content,className="",tags,kindTag=""){
+  return`<span class="entity-preview ${className}">${content.code?`<code>${escapeHTML(content.title)}</code>`:`<strong>${escapeHTML(content.title)}</strong>`}${inlineTags(tags,kindTag)}</span>`;
 }
 
 function renderDetail(event){
@@ -851,7 +1247,7 @@ function renderDetail(event){
   const group=groupFor(event);
   elements.back.innerHTML=`<span aria-hidden="true">←</span> Back to ${escapeHTML(kindLabel(state.kind).toLowerCase())}`;
   if(event.kind==="query"){
-    elements.detail.innerHTML=`<div class="detail-body telescope-stack">${queryDetailsCard(event,group.request)}${querySQLCard(event)}</div>`;
+    elements.detail.innerHTML=`<div class="detail-body telescope-stack">${queryDetailsCard(event,group.request)}${querySQLCard(event)}${queryCallsiteCard(event)}${queryPlanCard(event)}${queryReplayCard(event)}</div>`;
     return;
   }
   if(event.kind==="cache"){
@@ -867,10 +1263,51 @@ function renderDetail(event){
   elements.detail.innerHTML=`
     <div class="detail-body telescope-stack">
       ${requestDetailsCard(event)}
+      ${requestDiagnosticsCard(group)}
       ${requestCard(event)}
       ${responseCard(event)}
       ${relatedCard(group,event,relatedTabs)}
     </div>`;
+}
+
+function requestDiagnosticsCard(group){
+  const request=group.request;
+  if(!request)return"";
+  const analysis=state.analyses.get(request.id);
+  if(!analysis&&state.sessionMode==="live")loadRequestAnalysis(request.id);
+  if(!analysis){
+    const message=state.sessionMode==="imported"?"Analysis was not included in this imported session.":"Analyzing the complete request timeline…";
+    return`<section class="detail-section telescope-card diagnostics-card"><div class="section-heading"><h3>Automatic findings</h3><span>${state.sessionMode==="imported"?"Unavailable":"Running"}</span></div><div class="diagnostic-pending">${escapeHTML(message)}</div></section>`;
+  }
+  if(analysis.error){
+    return`<section class="detail-section telescope-card diagnostics-card"><div class="section-heading"><h3>Automatic findings</h3><span>Unavailable</span></div><div class="diagnostic-pending">${escapeHTML(analysis.error)}</div></section>`;
+  }
+  const findings=Array.isArray(analysis.findings)?analysis.findings:[];
+  const content=findings.length?findings.map(finding=>{
+    const entryID=typeof finding.entry_id==="string"&&state.events.has(finding.entry_id)?finding.entry_id:"";
+    const severity=["info","warning","danger"].includes(finding.severity)?finding.severity:"warning";
+    const supporting=[finding.detail,finding.suggestion].filter(Boolean).join(" · ");
+    return`<button type="button" class="diagnostic-row ${severity}"${entryID?` data-event-id="${escapeHTML(entryID)}"`:""}><span class="diagnostic-mark" aria-hidden="true"></span><span><strong>${escapeHTML(finding.title||"Finding")}</strong>${supporting?`<small>${escapeHTML(supporting)}</small>`:""}</span>${entryID?rowAction():""}</button>`;
+  }).join(""):'<div class="diagnostic-healthy"><span aria-hidden="true">✓</span><strong>No automatic findings</strong><small>The recorded request timeline passed the current diagnostic rules.</small></div>';
+  return`<section class="detail-section telescope-card diagnostics-card"><div class="section-heading"><h3>Automatic findings</h3><span>${findings.length?`${findings.length} ${plural(findings.length,"finding","findings")}`:"Healthy"}</span></div><div class="diagnostic-list">${content}</div></section>`;
+}
+
+function loadRequestAnalysis(requestID){
+  if(!requestID||state.sessionMode!=="live"||state.analyses.has(requestID)||state.analysisPending.has(requestID))return;
+  state.analysisPending.add(requestID);
+  api(`/api/requests/${encodeURIComponent(requestID)}/analysis`).then(analysis=>{
+    state.analyses.set(requestID,analysis);
+  }).catch(error=>{
+    state.analyses.set(requestID,{error:`Could not analyze request: ${error.message}`});
+  }).finally(()=>{
+    state.analysisPending.delete(requestID);
+    if(state.screen==="detail"&&state.selected===requestID)renderDetail(state.events.get(requestID));
+  });
+}
+
+function invalidateRequestAnalysis(event){
+  const requestID=event.kind==="request"?event.id:event.request_id||event.origin_request_id;
+  if(requestID)state.analyses.delete(requestID);
 }
 
 function groupFor(event){
@@ -938,12 +1375,55 @@ function queryDetailsCard(query,request){
     ["Duration",duration(query.duration_ns)]
   ];
   if(data.rows_affected!==undefined&&data.rows_affected!==null)facts.push(["Rows affected",data.rows_affected]);
+  if(Array.isArray(data.callsite)&&data.callsite.length)facts.push(["Callsite",sourceFrameLocation(data.callsite[0],true),true]);
   facts.push(["Request",request?requestLink(request):"Standalone",Boolean(request)],["Tags",tagList(query.tags),Boolean(query.tags&&Object.keys(query.tags).length)]);
   return`<section class="detail-section telescope-card"><div class="section-heading"><h3>Query Details</h3><span>${escapeHTML(query.id)}</span></div><dl class="facts">${facts.map(([name,value,html])=>`<dt>${escapeHTML(name)}</dt><dd>${html?value:escapeHTML(value)}</dd>`).join("")}</dl>${data.error?`<div class="danger-block">${escapeHTML(data.error)}</div>`:""}</section>`;
 }
 
 function querySQLCard(query){
   return`<section class="detail-section telescope-card"><nav class="card-tabs query-tabs" aria-label="SQL query"><span class="card-tab active">Query</span><button type="button" class="copy-button" data-copy-query aria-label="Copy SQL" title="Copy SQL"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 8h9v11H9zM6 16H4V5h9v3"/></svg><span>Copied</span></button></nav><div class="card-panel">${sqlPanel((query.data||{}).sql||"")}</div></section>`;
+}
+
+function queryCallsiteCard(query){
+  const frames=Array.isArray(query.data?.callsite)?query.data.callsite:[];
+  const panel=frames.length?`<div class="query-callsite">${frames.map((frame,index)=>`<div class="source-frame${index===0?" primary":""}"><span class="source-index">${index+1}</span><span class="source-copy"><strong>${sourceFrameLocation(frame,false)}</strong><code>${escapeHTML(frame.function||"unknown function")}</code></span><span class="source-actions">${safeSourceURL(frame.url)?`<a href="${escapeHTML(safeSourceURL(frame.url))}" title="Open source">Open</a>`:""}<button type="button" data-copy-source="${index}" title="Copy ${escapeHTML(`${frame.file||""}:${frame.line||0}`)}">Copy</button></span></div>`).join("")}</div>`:'<div class="panel-empty">No Go callsite was captured.</div>';
+  return`<section class="detail-section telescope-card"><nav class="card-tabs query-tabs" aria-label="Query callsite"><span class="card-tab active">Callsite</span><span class="query-card-meta">${frames.length?`${frames.length} frames`:"not captured"}</span></nav><div class="card-panel source-panel">${panel}</div></section>`;
+}
+
+function queryPlanCard(query){
+  const plan=query.data?.plan;
+  const meta=plan?.duration_ns?duration(plan.duration_ns):plan?"captured":"opt-in";
+  const panel=plan?.text?codePanel(plan.text,false,"No plan rows were returned."):'<div class="panel-empty">EXPLAIN was not captured. Enable it explicitly in the SQL integration.</div>';
+  return`<section class="detail-section telescope-card"><nav class="card-tabs query-tabs" aria-label="Query plan"><span class="card-tab active">EXPLAIN</span><span class="query-card-meta">${escapeHTML(meta)}</span>${plan?.text?`<button type="button" class="copy-button" data-copy-query-plan aria-label="Copy EXPLAIN" title="Copy EXPLAIN"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 8h9v11H9zM6 16H4V5h9v3"/></svg><span>Copied</span></button>`:""}</nav><div class="card-panel">${panel}</div>${plan?.error?`<div class="danger-block">${escapeHTML(plan.error)}</div>`:""}</section>`;
+}
+
+function queryReplayCard(query){
+  return`<section class="detail-section telescope-card"><nav class="card-tabs query-tabs" aria-label="Go query replay"><span class="card-tab active">Go replay</span><span class="query-card-meta">arguments are never recorded</span><button type="button" class="copy-button" data-copy-query-replay aria-label="Copy Go replay" title="Copy Go replay"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 8h9v11H9zM6 16H4V5h9v3"/></svg><span>Copied</span></button></nav><div class="card-panel">${codePanel(queryReplayCode(query),false,"No SQL was captured.")}</div></section>`;
+}
+
+function queryReplayCode(query){
+  const data=query?.data||{};
+  const sql=String(data.sql||"");
+  if(!sql)return"";
+  const operation=String(data.operation||sql.trim().split(/\s+/,1)[0]||"").toUpperCase();
+  const hasArguments=/\?|\$\d+|:\w+|@\w+/.test(sql);
+  const args=hasArguments?'args := []any{\n\t// TODO: add values for the SQL placeholders.\n}\n\n':"";
+  const suffix=hasArguments?", args...":"";
+  if(operation==="SELECT"||operation==="WITH")return`${args}rows, err := db.QueryContext(ctx, ${JSON.stringify(sql)}${suffix})\nif err != nil {\n\treturn err\n}\ndefer rows.Close()\n\nfor rows.Next() {\n\t// TODO: scan one row.\n}\nreturn rows.Err()`;
+  return`${args}result, err := db.ExecContext(ctx, ${JSON.stringify(sql)}${suffix})\nif err != nil {\n\treturn err\n}\n\n_, err = result.RowsAffected()\nreturn err`;
+}
+
+function sourceFrameLocation(frame,linked){
+  const file=String(frame?.file||"unknown");
+  const label=`${file.split(/[\\/]/).pop()}:${Number(frame?.line)||0}`;
+  const url=safeSourceURL(frame?.url);
+  if(linked&&url)return`<a class="source-inline-link" href="${escapeHTML(url)}">${escapeHTML(label)}</a>`;
+  return escapeHTML(label);
+}
+
+function safeSourceURL(value){
+  const url=String(value||"").trim();
+  return /^(https?:\/\/|vscode:\/\/file\/|goland:\/\/open\?|zed:\/\/file\/)/i.test(url)?url:"";
 }
 
 function cacheDetailsCard(cache,request){
@@ -986,9 +1466,10 @@ function tagList(tags){
   return`<span class="tag-list">${Object.entries(tags).map(([name,value])=>{const token=`${name}=${value}`;return`<button type="button" data-watch-tag="${escapeHTML(token)}" title="Watch ${escapeHTML(token)}">${escapeHTML(name)}${value?`: ${escapeHTML(value)}`:""}</button>`}).join("")}</span>`;
 }
 
-function inlineTags(tags){
-  if(!tags||!Object.keys(tags).length)return"";
-  return`<span class="inline-tags">${Object.entries(tags).slice(0,3).map(([name,value])=>`<i>${escapeHTML(name)}${value?`=${escapeHTML(value)}`:""}</i>`).join("")}</span>`;
+function inlineTags(tags,kindTag=""){
+  const entries=Object.entries(tags||{}).slice(0,3);
+  if(!kindTag&&!entries.length)return"";
+  return`<span class="inline-tags">${kindTag?`<i class="event-kind-tag" title="Kind">${escapeHTML(kindTag)}</i>`:""}${entries.map(([name,value])=>`<i>${escapeHTML(name)}${value?`=${escapeHTML(value)}`:""}</i>`).join("")}</span>`;
 }
 
 function requestLink(request){
@@ -1064,8 +1545,9 @@ function requestCard(request){
   if(state.requestTab==="headers")panel=headersPanel(message.headers,"No request headers were captured.");
   else if(state.requestTab==="raw")panel=codePanel(rawHTTPRequest(request),message.truncated,"No raw request could be generated.");
   else if(state.requestTab==="curl")panel=codePanel(curlCommand(request),message.truncated,"No cURL command could be generated.");
+  else if(state.requestTab==="har")panel=codePanel(requestHAR(request),false,"No HAR entry could be generated.");
   else panel=codePanel(requestPayload(data,message),message.truncated,"No request payload was captured.");
-  const tabs=[{key:"payload",label:"Payload"},{key:"headers",label:"Headers",count:headerCount(message.headers)},{key:"raw",label:"Raw"},{key:"curl",label:"cURL"}];
+  const tabs=[{key:"payload",label:"Payload"},{key:"headers",label:"Headers",count:headerCount(message.headers)},{key:"raw",label:"Raw"},{key:"curl",label:"cURL"},{key:"har",label:"HAR"}];
   return tabbedCard("Request",tabs,state.requestTab,panel,requestCopyButton(state.requestTab));
 }
 
@@ -1141,11 +1623,13 @@ function requestPayload(data,message){
 
 function requestCopyButton(format){
   const label=requestFormatLabel(format);
-  return`<button type="button" class="copy-button" data-copy-request="${escapeHTML(format)}" aria-label="Copy ${escapeHTML(label)}" title="Copy ${escapeHTML(label)}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 8h9v11H9zM6 16H4V5h9v3"/></svg><span>Copied</span></button>`;
+  const copy=`<button type="button" class="copy-button" data-copy-request="${escapeHTML(format)}" aria-label="Copy ${escapeHTML(label)}" title="Copy ${escapeHTML(label)}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 8h9v11H9zM6 16H4V5h9v3"/></svg><span>Copied</span></button>`;
+  if(format!=="har")return copy;
+  return`<span class="card-actions"><button type="button" class="copy-button" data-download-har aria-label="Download HAR" title="Download HAR"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M5 20h14"/></svg></button>${copy}</span>`;
 }
 
 function requestFormatLabel(format){
-  return{payload:"payload",headers:"headers",raw:"raw HTTP",curl:"cURL"}[format]||"request";
+  return{payload:"payload",headers:"headers",raw:"raw HTTP",curl:"cURL",har:"HAR"}[format]||"request";
 }
 
 function requestRepresentation(request,format){
@@ -1155,7 +1639,30 @@ function requestRepresentation(request,format){
   if(format==="headers")return requestHeadersText(data,false);
   if(format==="raw")return rawHTTPRequest(request);
   if(format==="curl")return curlCommand(request);
+  if(format==="har")return requestHAR(request);
   return requestPayload(data,message);
+}
+
+function requestHAR(request){
+  const data=request?.data||{};
+  const requestMessage=data.request||{};
+  const responseMessage=data.response||{};
+  const url=absoluteRequestURL(data);
+  const query=[];
+  try{
+    for(const [name,value] of new URL(url).searchParams)query.push({name,value});
+  }catch{}
+  const headers=value=>Object.entries(value||{}).flatMap(([name,values])=>(Array.isArray(values)?values:[values]).map(item=>({name,value:String(item)})));
+  const entry={
+    startedDateTime:request.started_at,
+    time:eventDuration(request)/1e6,
+    request:{method:data.method||"GET",url,httpVersion:data.protocol||"HTTP/1.1",headers:headers(requestMessage.headers),queryString:query,cookies:[],headersSize:-1,bodySize:Number(requestMessage.size)||-1},
+    response:{status:Number(data.status)||0,statusText:"",httpVersion:data.protocol||"HTTP/1.1",headers:headers(responseMessage.headers),cookies:[],content:{size:Number(responseMessage.size)||Number(data.response_size)||0,mimeType:responseMessage.content_type||"",text:responseMessage.body||""},redirectURL:"",headersSize:-1,bodySize:Number(responseMessage.size)||Number(data.response_size)||-1},
+    cache:{},
+    timings:{send:0,wait:eventDuration(request)/1e6,receive:0}
+  };
+  if(requestMessage.body)entry.request.postData={mimeType:requestMessage.content_type||"",text:requestMessage.body};
+  return JSON.stringify({log:{version:"1.2",creator:{name:"webpprof",version:"dev"},entries:[entry]}},null,2);
 }
 
 function requestHeadersText(data,includeHost){
@@ -1232,16 +1739,16 @@ function rowAction(){
 }
 
 function relationContent(kind,event,data){
-  if(kind==="middleware")return{title:data.name||"Middleware",subtitle:`${data.state||"completed"} · inclusive timing`};
-  if(kind==="query")return{title:compactQuery(data.sql||""),full:data.sql||"",subtitle:[data.operation||"SQL",data.connection||data.driver||"default"].join(" · "),code:true};
-  if(kind==="cache")return{title:data.key||"Cache operation",subtitle:[data.operation||"cache",data.store||"default"].join(" · "),code:true};
-  if(kind==="log")return{title:data.message||"Log entry",subtitle:(data.level||"log").toUpperCase()};
-  if(kind==="job")return{title:data.name||"Job",subtitle:[data.queue||"default",data.state||"recorded"].join(" · ")};
-  if(kind==="email")return{title:data.subject||"Email",subtitle:[data.transport||"mail",(data.to||[]).map(address).join(", ")||"no recipients"].join(" · ")};
-  if(kind==="http_call")return{title:`${data.method||"HTTP"} ${data.url||""}`,subtitle:data.status?`Status ${data.status}`:"Outgoing request"};
-  if(kind==="schedule")return{title:data.name||"Scheduled task",subtitle:data.state||"recorded"};
-  if(kind==="exception")return{title:data.message||"Exception",subtitle:data.type||"Exception"};
-  return{title:data.name||data.summary||kindLabel(kind),subtitle:[data.kind,data.status].filter(Boolean).join(" · ")||"Application event"};
+  if(kind==="middleware")return{title:data.name||"Middleware"};
+  if(kind==="query")return{title:compactQuery(data.sql||""),full:data.sql||"",code:true};
+  if(kind==="cache")return{title:data.key||"Cache operation",code:true};
+  if(kind==="log")return{title:data.message||"Log entry"};
+  if(kind==="job")return{title:data.name||"Job"};
+  if(kind==="email")return{title:data.subject||"Email"};
+  if(kind==="http_call")return{title:`${data.method||"HTTP"} ${data.url||""}`};
+  if(kind==="schedule")return{title:data.name||"Scheduled task"};
+  if(kind==="exception")return{title:data.message||"Exception"};
+  return{title:data.name||data.summary||kindLabel(kind)};
 }
 
 function compactQuery(sql){
@@ -1259,11 +1766,131 @@ function plural(count,singular,pluralValue){
 
 function timeline(events){
   if(!events.length)return'<div class="detail-empty compact"><strong>No timeline events</strong></div>';
-  const first=Date.parse(events[0].started_at);
-  return`<div class="timeline">${events.map(event=>{
-    const offset=Math.max(0,Date.parse(event.started_at)-first);
-    return`<button type="button" class="timeline-row" data-event-id="${escapeHTML(event.id)}"><span class="timeline-rail"><i data-kind="${escapeHTML(event.kind)}"></i></span><span class="timeline-copy"><strong>${escapeHTML(title(event))}</strong><small>${escapeHTML(kindLabel(event.kind))} · +${offset.toFixed(1)} ms</small></span><span class="duration">${duration(event.duration_ns)}</span></button>`;
-  }).join("")}</div>`;
+  const request=events.find(event=>event.kind==="request")||events[0];
+  const starts=events.map(event=>Date.parse(event.started_at)).filter(Number.isFinite);
+  const requestStart=Date.parse(request.started_at);
+  const first=Number.isFinite(requestStart)?requestStart:starts.length?Math.min(...starts):Date.now();
+  const last=Math.max(first+1,...events.map(event=>timelineEventEnd(event,first)));
+  const windowMS=Math.max(last-first,1);
+  const byID=new Map(events.map(event=>[event.id,event]));
+  const ordered=timelineTree(events,request,byID);
+  const critical=timelineCriticalPath(events,first,last);
+  const rows=ordered.map(({event,depth,isLast})=>{
+    const started=Date.parse(event.started_at);
+    const offset=Math.max(0,(Number.isFinite(started)?started:first)-first);
+    const recorded=Math.max(eventDuration(event)/1e6,0);
+    const elapsed=event.id===request.id?windowMS:Math.max(recorded,.05);
+    const x=Math.min(998,Math.max(0,offset/windowMS*1000));
+    const width=Math.max(2,Math.min(1000-x,elapsed/windowMS*1000));
+    const criticalClass=critical.ids.has(event.id)?" critical":"";
+    const bottleneckClass=critical.bottleneck?.id===event.id?" bottleneck":"";
+    const durationLabel=event.id===request.id&&recorded<windowMS*.99?formatMilliseconds(windowMS):duration(event.duration_ns);
+    const operation=event.kind==="request"?requestTarget(event.data||{}):title(event);
+    return`<button type="button" class="gantt-row depth-${Math.min(depth,6)}${isFailure(event)?" failed":""}${criticalClass}${bottleneckClass}" data-event-id="${escapeHTML(event.id)}"><span class="gantt-operation"><span class="gantt-branch" aria-hidden="true">${depth?(isLast?"└─":"├─"):""}</span><span class="gantt-kind" data-kind="${escapeHTML(event.kind)}">${escapeHTML(timelineKindLabel(event.kind))}</span><strong title="${escapeHTML(operation)}">${escapeHTML(operation)}</strong>${critical.bottleneck?.id===event.id?'<em>Bottleneck</em>':""}</span><span class="gantt-track"><svg viewBox="0 0 1000 24" preserveAspectRatio="none" role="img" aria-label="Starts at ${escapeHTML(formatMilliseconds(offset))}, lasts ${escapeHTML(durationLabel)}"><rect class="gantt-bar" data-kind="${escapeHTML(event.kind)}" x="${x.toFixed(2)}" y="4" width="${width.toFixed(2)}" height="16" rx="3"/></svg></span><b>${escapeHTML(durationLabel)}</b>${rowAction()}</button>`;
+  }).join("");
+  const bottleneck=critical.bottleneck;
+  const summary=`<div class="gantt-summary"><div class="gantt-stat"><span>Request window</span><strong>${escapeHTML(formatMilliseconds(windowMS))}</strong></div><div class="gantt-stat"><span>Critical path</span><strong>${escapeHTML(formatMilliseconds(critical.duration))}</strong></div><div class="gantt-stat bottleneck"><span>Bottleneck</span><strong>${escapeHTML(bottleneck?title(bottleneck):"None")}</strong></div></div>`;
+  return`<div class="gantt">${summary}${timelineBreakdown(events)}<div class="gantt-table"><div class="gantt-heading"><span>Operation</span>${timelineAxis(windowMS)}<span>Duration</span><span></span></div>${rows}</div></div>`;
+}
+
+function timelineEventEnd(event,fallback){
+  const started=Date.parse(event.started_at);
+  return(Number.isFinite(started)?started:fallback)+Math.max(eventDuration(event)/1e6,.05);
+}
+
+function timelineTree(events,request,byID){
+  const children=new Map();
+  for(const event of events){
+    if(event.id===request.id)continue;
+    const parentID=event.parent_id&&byID.has(event.parent_id)&&event.parent_id!==event.id?event.parent_id:request.id;
+    if(!children.has(parentID))children.set(parentID,[]);
+    children.get(parentID).push(event);
+  }
+  const compare=(left,right)=>(Date.parse(left.started_at)||0)-(Date.parse(right.started_at)||0)||(left.cursor||0)-(right.cursor||0);
+  for(const group of children.values())group.sort(compare);
+  const ordered=[];
+  const visited=new Set();
+  const visit=(event,depth,isLast)=>{
+    if(visited.has(event.id))return;
+    visited.add(event.id);
+    ordered.push({event,depth,isLast});
+    const nested=children.get(event.id)||[];
+    nested.forEach((child,index)=>visit(child,depth+1,index===nested.length-1));
+  };
+  visit(request,0,true);
+  [...events].sort(compare).forEach(event=>{
+    if(!visited.has(event.id))visit(event,event.kind==="request"?0:1,true);
+  });
+  return ordered;
+}
+
+function timelineCriticalPath(events,first,last){
+  const blockingKinds=new Set(["middleware","query","cache","http_call"]);
+  const operations=events.filter(event=>blockingKinds.has(event.kind)&&eventDuration(event)>0).map(event=>{
+    const start=Math.max(first,Date.parse(event.started_at)||first);
+    const end=Math.min(last,start+eventDuration(event)/1e6);
+    return{event,start,end,weight:Math.max(0,end-start)};
+  }).filter(operation=>operation.weight>0).sort((left,right)=>left.end-right.end||left.start-right.start);
+  const best=Array(operations.length+1).fill(0);
+  const previous=Array(operations.length).fill(-1);
+  const take=Array(operations.length+1).fill(false);
+  for(let index=0;index<operations.length;index++){
+    for(let candidate=index-1;candidate>=0;candidate--){
+      if(operations[candidate].end<=operations[index].start){previous[index]=candidate;break;}
+    }
+    const withCurrent=operations[index].weight+best[previous[index]+1];
+    const withoutCurrent=best[index];
+    if(withCurrent>withoutCurrent){best[index+1]=withCurrent;take[index+1]=true;}
+    else best[index+1]=withoutCurrent;
+  }
+  const selected=[];
+  for(let cursor=operations.length;cursor>0;){
+    if(take[cursor]){
+      const operation=operations[cursor-1];
+      selected.push(operation.event);
+      cursor=previous[cursor-1]+1;
+    }else cursor--;
+  }
+  selected.reverse();
+  const ids=new Set(selected.map(event=>event.id));
+  const request=events.find(event=>event.kind==="request");
+  if(request)ids.add(request.id);
+  const bottleneck=selected.reduce((largest,event)=>!largest||eventDuration(event)>eventDuration(largest)?event:largest,null);
+  return{ids,bottleneck,duration:best[operations.length]};
+}
+
+function timelineBreakdown(events){
+  const totals=new Map();
+  for(const event of events){
+    if(event.kind==="request")continue;
+    const value=Math.max(eventDuration(event)/1e6,0);
+    if(value)totals.set(event.kind,(totals.get(event.kind)||0)+value);
+  }
+  const parts=[...totals].map(([kind,value])=>({kind,value})).sort((left,right)=>right.value-left.value);
+  const total=parts.reduce((sum,part)=>sum+part.value,0);
+  if(!total)return"";
+  let cursor=0;
+  const segments=parts.map(part=>{
+    const width=part.value/total*1000;
+    const segment=`<rect data-kind="${escapeHTML(part.kind)}" x="${cursor.toFixed(2)}" y="0" width="${Math.max(width,1).toFixed(2)}" height="12"/>`;
+    cursor+=width;
+    return segment;
+  }).join("");
+  const legend=parts.map(part=>`<span><i data-kind="${escapeHTML(part.kind)}"></i><b>${escapeHTML(timelineKindLabel(part.kind))}</b><em>${escapeHTML(formatMilliseconds(part.value))}</em><small>${Math.round(part.value/total*100)}%</small></span>`).join("");
+  return`<section class="gantt-breakdown"><div><strong>Operation breakdown</strong><span>Aggregated recorded time</span></div><svg viewBox="0 0 1000 12" preserveAspectRatio="none" role="img" aria-label="Operation time breakdown">${segments}</svg><div class="gantt-legend">${legend}</div></section>`;
+}
+
+function timelineAxis(windowMS){
+  return`<span class="gantt-axis"><span>0</span><span>${escapeHTML(formatMilliseconds(windowMS*.25))}</span><span>${escapeHTML(formatMilliseconds(windowMS*.5))}</span><span>${escapeHTML(formatMilliseconds(windowMS*.75))}</span><span>${escapeHTML(formatMilliseconds(windowMS))}</span></span>`;
+}
+
+function timelineKindLabel(kind){
+  const labels={request:"Request",middleware:"Middleware",query:"SQL",cache:"Cache",http_call:"HTTP",job:"Job",email:"Mail",log:"Log",schedule:"Schedule",exception:"Exception",event:"Event"};
+  return labels[kind]||kindSingular(kind);
+}
+
+function formatMilliseconds(value){
+  return value>=1000?`${(value/1000).toFixed(2)} s`:`${value.toFixed(value>=10?1:2)} ms`;
 }
 
 function rawBlock(value){
@@ -1384,7 +2011,7 @@ function title(event){
   const data=event.data||{};
   if(event.kind==="request")return`${data.method||"HTTP"} ${requestTarget(data)}`;
   if(event.kind==="middleware")return data.name||"middleware";
-  if(event.kind==="query")return`${data.operation||"SQL"} ${short(data.sql||"")}`;
+  if(event.kind==="query")return short(data.sql||"")||data.operation||"SQL";
   if(event.kind==="cache")return`${data.operation||"cache"} ${data.key||""}`;
   if(event.kind==="job")return data.name||"job";
   if(event.kind==="email")return data.subject||"email";
