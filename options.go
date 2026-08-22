@@ -59,7 +59,7 @@ type config struct {
 	requestSample    float64
 	requestLimit     int64
 	disabledKinds    map[Kind]struct{}
-	queryCallsite    bool
+	callsiteKinds    map[Kind]struct{}
 	sourceLink       SourceLinkFunc
 }
 
@@ -85,14 +85,39 @@ func defaultConfig() config {
 		requestSample:    1,
 		requestLimit:     -1,
 		disabledKinds:    make(map[Kind]struct{}),
-		queryCallsite:    true,
+		callsiteKinds:    map[Kind]struct{}{KindQuery: {}},
 	}
 }
 
 // WithQueryCallsite controls automatic Go stack capture for queries. It is
 // enabled by default; disable it when the allocation overhead is undesirable.
+// Deprecated: use WithCallsiteKinds to select all entity kinds whose callsites
+// should be captured. This option remains available for backward compatibility.
 func WithQueryCallsite(enabled bool) Option {
-	return func(c *config) { c.queryCallsite = enabled }
+	return func(c *config) {
+		if c.callsiteKinds == nil {
+			c.callsiteKinds = make(map[Kind]struct{})
+		}
+		if enabled {
+			c.callsiteKinds[KindQuery] = struct{}{}
+			return
+		}
+		delete(c.callsiteKinds, KindQuery)
+	}
+}
+
+// WithCallsiteKinds replaces the set of entity kinds whose Go callsites are
+// captured automatically. Passing no kinds disables automatic capture. The
+// supported kinds are Query, Cache, Email, Job, HTTPCall, and Schedule.
+func WithCallsiteKinds(kinds ...Kind) Option {
+	return func(c *config) {
+		c.callsiteKinds = make(map[Kind]struct{}, len(kinds))
+		for _, kind := range kinds {
+			if supportsCallsite(kind) {
+				c.callsiteKinds[kind] = struct{}{}
+			}
+		}
+	}
 }
 
 // WithSourceLink makes captured Go frames clickable in the viewer.

@@ -1254,11 +1254,11 @@ function renderDetail(event){
     return;
   }
   if(event.kind==="cache"){
-    elements.detail.innerHTML=`<div class="detail-body telescope-stack">${cacheDetailsCard(event,group.request)}${cacheValueCard(event)}</div>`;
+    elements.detail.innerHTML=`<div class="detail-body telescope-stack">${cacheDetailsCard(event,group.request)}${cacheValueCard(event)}${callsiteCard(event)}</div>`;
     return;
   }
   if(event.kind!=="request"){
-    elements.detail.innerHTML=`<div class="detail-body telescope-stack">${entityDetailsCard(event,group.request)}${entityContentCards(event)}</div>`;
+    elements.detail.innerHTML=`<div class="detail-body telescope-stack">${entityDetailsCard(event,group.request)}${entityContentCards(event)}${callsiteCard(event)}</div>`;
     return;
   }
   if(!state.analyses.has(event.id)&&state.sessionMode==="live")loadRequestAnalysis(event.id);
@@ -1416,6 +1416,12 @@ function queryCallsitePanel(query){
   return frames.length?`<div class="query-callsite">${frames.map((frame,index)=>`<div class="source-frame${index===0?" primary":""}"><span class="source-index">${index+1}</span><span class="source-copy"><strong>${sourceFrameLocation(frame,false)}</strong><code>${escapeHTML(frame.function||"unknown function")}</code></span><span class="source-actions">${safeSourceURL(frame.url)?`<a href="${escapeHTML(safeSourceURL(frame.url))}" title="Open source">Open</a>`:""}<button type="button" data-copy-source="${index}" title="Copy ${escapeHTML(`${frame.file||""}:${frame.line||0}`)}">Copy</button></span></div>`).join("")}</div>`:'<div class="panel-empty">No Go callsite was captured.</div>';
 }
 
+function callsiteCard(event){
+  const frames=Array.isArray(event.data?.callsite)?event.data.callsite:[];
+  if(!frames.length)return"";
+  return`<section class="detail-section telescope-card"><nav class="card-tabs query-tabs" aria-label="Callsite"><span class="card-tab active">Callsite</span><span class="tab-badge">${frames.length}</span></nav><div class="card-panel">${queryCallsitePanel(event)}</div></section>`;
+}
+
 function queryPlanPanel(query){
   const plan=query.data?.plan;
   const panel=plan?.text?codePanel(plan.text,false,"No plan rows were returned."):'<div class="panel-empty">EXPLAIN was not captured. Enable it explicitly in the SQL integration.</div>';
@@ -1468,6 +1474,7 @@ function cacheDetailsCard(cache,request){
     ["Request",request?requestLink(request):"Standalone",Boolean(request)],
     ["Tags",tagList(cache.tags),Boolean(cache.tags&&Object.keys(cache.tags).length)]
   ];
+  if(Array.isArray(data.callsite)&&data.callsite.length)facts.splice(facts.length-2,0,["Callsite",sourceFrameLocation(data.callsite[0],true),true]);
   return`<section class="detail-section telescope-card"><div class="section-heading"><h3>Cache Details</h3><span>${escapeHTML(cache.id)}</span></div><dl class="facts">${facts.map(([name,value,html])=>`<dt>${escapeHTML(name)}</dt><dd>${html?value:escapeHTML(value)}</dd>`).join("")}</dl>${data.error?`<div class="danger-block">${escapeHTML(data.error)}</div>`:""}</section>`;
 }
 
@@ -1520,6 +1527,7 @@ function entityDetailsCard(event,request){
   if(event.kind==="exception")facts.push(["Type",data.type||"Exception"],["Message",data.message||"—"],["Status",`<span class="state error">Error</span>`,true]);
   if(event.kind==="event")facts.push(["Kind",data.kind||"event"],["Name",data.name||"—"],["Status",`<span class="state ${status.className}">${escapeHTML(data.status||status.label)}</span>`,true],["Summary",data.summary||"—"]);
   facts.push(["Duration",duration(event.duration_ns)]);
+  if(Array.isArray(data.callsite)&&data.callsite.length)facts.push(["Callsite",sourceFrameLocation(data.callsite[0],true),true]);
   if(request)facts.push(["Request",requestLink(request),true]);
   else facts.push(["Request","Standalone"]);
   if(event.process)facts.push(["Process",event.process]);

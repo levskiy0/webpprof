@@ -115,16 +115,17 @@ type Address struct {
 
 type Email struct {
 	Meta
-	Transport string    `json:"transport,omitempty"`
-	From      Address   `json:"from"`
-	To        []Address `json:"to,omitempty"`
-	CC        []Address `json:"cc,omitempty"`
-	BCC       []Address `json:"bcc,omitempty"`
-	Subject   string    `json:"subject,omitempty"`
-	Text      string    `json:"text,omitempty"`
-	HTML      string    `json:"html,omitempty"`
-	Status    string    `json:"status,omitempty"`
-	Error     string    `json:"error,omitempty"`
+	Transport string        `json:"transport,omitempty"`
+	From      Address       `json:"from"`
+	To        []Address     `json:"to,omitempty"`
+	CC        []Address     `json:"cc,omitempty"`
+	BCC       []Address     `json:"bcc,omitempty"`
+	Subject   string        `json:"subject,omitempty"`
+	Text      string        `json:"text,omitempty"`
+	HTML      string        `json:"html,omitempty"`
+	Status    string        `json:"status,omitempty"`
+	Callsite  []SourceFrame `json:"callsite,omitempty"`
+	Error     string        `json:"error,omitempty"`
 }
 
 type Cache struct {
@@ -137,6 +138,7 @@ type Cache struct {
 	Size      int64         `json:"size,omitempty"`
 	Value     string        `json:"value,omitempty"`
 	Truncated bool          `json:"truncated,omitempty"`
+	Callsite  []SourceFrame `json:"callsite,omitempty"`
 	Error     string        `json:"error,omitempty"`
 }
 
@@ -159,6 +161,7 @@ type Job struct {
 	AvailableAt time.Time     `json:"available_at,omitempty"`
 	Wait        time.Duration `json:"wait_ns,omitempty"`
 	Arguments   []Argument    `json:"arguments,omitempty"`
+	Callsite    []SourceFrame `json:"callsite,omitempty"`
 	Error       string        `json:"error,omitempty"`
 }
 
@@ -172,23 +175,25 @@ type Log struct {
 
 type HTTPCall struct {
 	Meta
-	Method       string      `json:"method"`
-	URL          string      `json:"url"`
-	Status       int         `json:"status,omitempty"`
-	Request      HTTPMessage `json:"request,omitempty"`
-	Response     HTTPMessage `json:"response,omitempty"`
-	ResponseSize int64       `json:"response_size,omitempty"`
-	Error        string      `json:"error,omitempty"`
+	Method       string        `json:"method"`
+	URL          string        `json:"url"`
+	Status       int           `json:"status,omitempty"`
+	Request      HTTPMessage   `json:"request,omitempty"`
+	Response     HTTPMessage   `json:"response,omitempty"`
+	ResponseSize int64         `json:"response_size,omitempty"`
+	Callsite     []SourceFrame `json:"callsite,omitempty"`
+	Error        string        `json:"error,omitempty"`
 }
 
 type Schedule struct {
 	Meta
-	Name      string    `json:"name"`
-	State     string    `json:"state,omitempty"`
-	PlannedAt time.Time `json:"planned_at,omitempty"`
-	Payload   any       `json:"payload,omitempty"`
-	Error     string    `json:"error,omitempty"`
-	Panic     string    `json:"panic,omitempty"`
+	Name      string        `json:"name"`
+	State     string        `json:"state,omitempty"`
+	PlannedAt time.Time     `json:"planned_at,omitempty"`
+	Payload   any           `json:"payload,omitempty"`
+	Callsite  []SourceFrame `json:"callsite,omitempty"`
+	Error     string        `json:"error,omitempty"`
+	Panic     string        `json:"panic,omitempty"`
 }
 
 type Exception struct {

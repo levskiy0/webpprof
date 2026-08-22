@@ -607,12 +607,12 @@ Package-level functions are safe no-ops before a default profiler is configured.
 | --- | --- | --- | --- |
 | `Request` | `LogRequest`; normally `webpprofhttp.MiddlewareWith` or `BeginRequest` / `Finish` | `Method`, `Path`, `Status` | `Scheme`, `Route`, `Query`, sizes, `Request`, `Response`, `Error` |
 | `Query` | `LogQuery`, `LogQueryContext`, `StartQuery` | `SQL` | `Connection`, `Driver`, `Database`, `Operation`, `RowsAffected`, `Callsite`, `Plan`, `Error` |
-| `Email` | `LogEmail`, `LogEmailContext` | `From`, `To`, `Subject` | `Transport`, `CC`, `BCC`, `Text`, `HTML`, `Status`, `Error` |
-| `Cache` | `LogCache`, `LogCacheContext` | `Operation`, `Key`, `Hit` | `Store`, `TTL`, `Size`, `Value`, `Truncated`, `Error` |
-| `Job` | `LogJob`, `LogJobContext` | `Name`, `State` | `Queue`, `Connection`, attempts, `AvailableAt`, `Wait`, `Arguments`, `Error` |
+| `Email` | `LogEmail`, `LogEmailContext` | `From`, `To`, `Subject` | `Transport`, `CC`, `BCC`, `Text`, `HTML`, `Status`, `Callsite`, `Error` |
+| `Cache` | `LogCache`, `LogCacheContext` | `Operation`, `Key`, `Hit` | `Store`, `TTL`, `Size`, `Value`, `Truncated`, `Callsite`, `Error` |
+| `Job` | `LogJob`, `LogJobContext` | `Name`, `State` | `Queue`, `Connection`, attempts, `AvailableAt`, `Wait`, `Arguments`, `Callsite`, `Error` |
 | `Log` | `LogLog`, `LogLogContext` | `Message` | `Level`, `Fields`, `Stack` |
-| `HTTPCall` | `LogHTTPCall`, `LogHTTPCallContext` | `Method`, `URL` | `Status`, `Request`, `Response`, `ResponseSize`, `Error` |
-| `Schedule` | `LogSchedule`, `LogScheduleContext` | `Name`, `State` | `PlannedAt`, `Payload`, `Error`, `Panic` |
+| `HTTPCall` | `LogHTTPCall`, `LogHTTPCallContext` | `Method`, `URL` | `Status`, `Request`, `Response`, `ResponseSize`, `Callsite`, `Error` |
+| `Schedule` | `LogSchedule`, `LogScheduleContext` | `Name`, `State` | `PlannedAt`, `Payload`, `Callsite`, `Error`, `Panic` |
 | `Exception` | `LogException`, `LogExceptionContext` | `Message` | `Type`, `Stack`; use `PanicException(recovered)` for recovered panics |
 | `Event` | `LogEvent`, `LogEventContext` | `Kind`, `Name` | `Status`, `Summary`, `Fields`, `Error` |
 | `Middleware` | `LogMiddleware`, `LogMiddlewareContext` | `Name`, `State` | Inclusive `Duration`, `Error` |
@@ -626,7 +626,7 @@ Nested values have their own small contracts:
 | `HTTPMessage` | `Headers`, `ContentType`, `Body`, original byte `Size`, and `Truncated` when only part of the body is stored. |
 | `Address` | Optional display `Name` and the primary `Email` value. Used by `Email.From`, `To`, `CC`, and `BCC`. |
 | `Argument` | Optional `Name`, Go or domain `Type`, rendered `Value`, original byte `Size`, and `Truncated`. Used by `Job.Arguments`. |
-| `SourceFrame` | Go `Function`, absolute or trimpath `File`, `Line`, and an optional editor/source-browser `URL`. Used by `Query.Callsite`. |
+| `SourceFrame` | Go `Function`, absolute or trimpath `File`, `Line`, and an optional editor/source-browser `URL`. Used by operation `Callsite` fields. |
 | `QueryPlan` | Plain EXPLAIN `Command`, textual `Format` and `Text`, separate lookup `Duration`, and an EXPLAIN-only `Error`. Used by `Query.Plan`. |
 
 Durations are Go `time.Duration` values and are serialized as nanoseconds (`duration_ns`, `ttl_ns`, and `wait_ns`). `Query.RowsAffected` is a pointer so that an actual zero can be distinguished from an unknown value.
@@ -731,16 +731,23 @@ Each profiler is a separate package. Importing the core does not pull every inte
 
 Profile dependencies in the composition root and inject the returned value. The application still owns and closes the original dependency. Use one profiler per operation path; combining Bun, SQL driver, and OpenTelemetry instrumentation on the same database records duplicates.
 
-### SQL callsite, EXPLAIN, and replay
+### Operation callsites, SQL EXPLAIN, and replay
 
-Query callsites are captured automatically by the manual API, Bun hook, and
-`database/sql` wrapper. Open a query and use **Callsite** to copy `file:line` or
-open the frame in an editor. Editor links are application-specific; configure
-one when creating the profiler:
+Query callsites are captured by default. Select additional operation types with
+`WithCallsiteKinds`; the viewer shows their captured stack in a **Callsite**
+panel. Open any frame to copy `file:line` or jump to it in an editor:
 
 ```go
 profiler := webpprof.New(
     mux,
+    webpprof.WithCallsiteKinds(
+        webpprof.KindQuery,
+        webpprof.KindCache,
+        webpprof.KindEmail,
+        webpprof.KindJob,
+        webpprof.KindHTTPCall,
+        webpprof.KindSchedule,
+    ),
     webpprof.WithSourceLink(func(frame webpprof.SourceFrame) string {
         // VS Code deep link. Use your editor's URL format here instead.
         return fmt.Sprintf("vscode://file/%s:%d", frame.File, frame.Line)
@@ -748,11 +755,13 @@ profiler := webpprof.New(
 )
 ```
 
-Callsite capture is enabled by default. It uses `runtime.Callers`, so applications
-that do not want the per-query allocation or source paths in stored profiler
-data can pass `webpprof.WithQueryCallsite(false)`. Builds made with `-trimpath`
-store trimmed paths; editor links then need to map those paths back to the local
-checkout.
+Only query callsite capture is enabled by default for backward compatibility.
+`WithCallsiteKinds` replaces that default set; passing it without kinds disables
+all automatic callsite capture. It uses `runtime.Callers`, so enable only the
+operation types where the allocation and stored source paths are useful. The old
+`WithQueryCallsite(false)` option remains available for compatibility. Builds
+made with `-trimpath` store trimmed paths; editor links then need to map those
+paths back to the local checkout.
 
 The `database/sql` profiler can capture a real plan on the intercepted raw
 connection. It is deliberately disabled by default:

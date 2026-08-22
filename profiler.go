@@ -222,12 +222,42 @@ func (p *Profiler) LogQuery(query Query) {
 	p.prepareQuery(&query)
 	p.record(KindQuery, query.Meta, query)
 }
-func (p *Profiler) LogEmail(email Email)          { p.record(KindEmail, email.Meta, email) }
-func (p *Profiler) LogCache(cache Cache)          { p.record(KindCache, cache.Meta, cache) }
-func (p *Profiler) LogJob(job Job)                { p.record(KindJob, job.Meta, job) }
-func (p *Profiler) LogLog(log Log)                { p.record(KindLog, log.Meta, log) }
-func (p *Profiler) LogHTTPCall(call HTTPCall)     { p.record(KindHTTPCall, call.Meta, call) }
-func (p *Profiler) LogSchedule(schedule Schedule) { p.record(KindSchedule, schedule.Meta, schedule) }
+func (p *Profiler) LogEmail(email Email) {
+	if p == nil {
+		return
+	}
+	p.prepareCallsite(KindEmail, &email.Callsite)
+	p.record(KindEmail, email.Meta, email)
+}
+func (p *Profiler) LogCache(cache Cache) {
+	if p == nil {
+		return
+	}
+	p.prepareCallsite(KindCache, &cache.Callsite)
+	p.record(KindCache, cache.Meta, cache)
+}
+func (p *Profiler) LogJob(job Job) {
+	if p == nil {
+		return
+	}
+	p.prepareCallsite(KindJob, &job.Callsite)
+	p.record(KindJob, job.Meta, job)
+}
+func (p *Profiler) LogLog(log Log) { p.record(KindLog, log.Meta, log) }
+func (p *Profiler) LogHTTPCall(call HTTPCall) {
+	if p == nil {
+		return
+	}
+	p.prepareCallsite(KindHTTPCall, &call.Callsite)
+	p.record(KindHTTPCall, call.Meta, call)
+}
+func (p *Profiler) LogSchedule(schedule Schedule) {
+	if p == nil {
+		return
+	}
+	p.prepareCallsite(KindSchedule, &schedule.Callsite)
+	p.record(KindSchedule, schedule.Meta, schedule)
+}
 func (p *Profiler) LogException(exception Exception) {
 	p.record(KindException, exception.Meta, exception)
 }

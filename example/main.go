@@ -34,7 +34,17 @@ func main() {
 		mux,
 		webpprof.WithRetention(time.Hour),
 		webpprof.WithExcludedRequests("GET /favicon.ico"),
-		// Make every captured SQL frame open directly in VS Code. Replace this
+		// Capture the application stack only for operation types where jumping
+		// from the viewer to the calling Go code is useful.
+		webpprof.WithCallsiteKinds(
+			webpprof.KindQuery,
+			webpprof.KindCache,
+			webpprof.KindEmail,
+			webpprof.KindJob,
+			webpprof.KindHTTPCall,
+			webpprof.KindSchedule,
+		),
+		// Make every captured source frame open directly in VS Code. Replace this
 		// URL builder with the deep-link format used by your editor.
 		webpprof.WithSourceLink(func(frame webpprof.SourceFrame) string {
 			return fmt.Sprintf("vscode://file/%s:%d", frame.File, frame.Line)
@@ -71,7 +81,7 @@ func main() {
 				},
 			}),
 			webpprof.WithCustomChart(webpprof.DashboardChart{
-				ID: "demo-history", Title: "Demo result history", Description: "Cumulative handler outcomes", Span: 2,
+				ID: "demo-history", Title: "Demo result history", Description: "Cumulative handler outcomes", Span: 4,
 				Series: []webpprof.DashboardSeries{
 					{ID: "success", Label: "Succeeded", Color: "#17a36d", Value: metrics.successValue},
 					{ID: "failed", Label: "Failed", Color: "#ba4a52", Value: metrics.failedValue},

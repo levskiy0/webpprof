@@ -97,6 +97,7 @@ func (p *Profiler) LogEmailContext(ctx context.Context, email Email) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return
 	}
+	p.prepareCallsite(KindEmail, &email.Callsite)
 	inheritContextMeta(ctx, &email.Meta)
 	if request := RequestFromContext(ctx); request != nil {
 		email.RequestID = request.ID()
@@ -118,6 +119,7 @@ func (p *Profiler) LogCacheContext(ctx context.Context, cache Cache) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return
 	}
+	p.prepareCallsite(KindCache, &cache.Callsite)
 	inheritContextMeta(ctx, &cache.Meta)
 	if request := RequestFromContext(ctx); request != nil {
 		cache.RequestID = request.ID()
@@ -139,6 +141,7 @@ func (p *Profiler) LogJobContext(ctx context.Context, job Job) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return
 	}
+	p.prepareCallsite(KindJob, &job.Callsite)
 	inheritContextMeta(ctx, &job.Meta)
 	if request := RequestFromContext(ctx); request != nil {
 		job.RequestID = request.ID()
@@ -181,6 +184,7 @@ func (p *Profiler) LogHTTPCallContext(ctx context.Context, call HTTPCall) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return
 	}
+	p.prepareCallsite(KindHTTPCall, &call.Callsite)
 	inheritContextMeta(ctx, &call.Meta)
 	if request := RequestFromContext(ctx); request != nil {
 		call.RequestID = request.ID()
@@ -202,6 +206,7 @@ func (p *Profiler) LogScheduleContext(ctx context.Context, schedule Schedule) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return
 	}
+	p.prepareCallsite(KindSchedule, &schedule.Callsite)
 	inheritContextMeta(ctx, &schedule.Meta)
 	if request := RequestFromContext(ctx); request != nil {
 		schedule.RequestID = request.ID()
