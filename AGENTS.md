@@ -52,7 +52,12 @@ Before tagging any module:
 - Prefer pushing release tags individually. GitHub may not emit tag push events
   when many tags are pushed in one operation.
 - Verify every published module version through `proxy.golang.org`.
-- The root `webpprof vX.Y.Z` GitHub release must be marked as **Latest**.
-- Nested profiler or command releases must never remain marked as **Latest**.
-  If nested releases are published after the root release, explicitly restore
-  the root release as Latest and verify it through the GitHub API.
+- Publishing a nested profiler, storage, or command module means pushing its
+  module-scoped tag and verifying the version through `proxy.golang.org`. Do
+  not create a GitHub Release for nested modules.
+- The `cmd/webpprof-mcp` module follows the same rule: publish
+  `cmd/webpprof-mcp/vX.Y.Z` as a Go module tag, but do not create a separate
+  GitHub Release for the MCP binary.
+- Create GitHub Releases only for root `vX.Y.Z` tags. The root
+  `webpprof vX.Y.Z` GitHub Release must be marked as **Latest** and verified
+  through the GitHub API.

@@ -5,6 +5,12 @@ versioning and are published from `v*` Git tags.
 
 ## Unreleased
 
+### Changed
+
+- Publish nested profiler, storage, and MCP command modules through
+  module-scoped Git tags and `proxy.golang.org` without creating separate
+  GitHub Release pages; only root `vX.Y.Z` tags create product releases.
+
 ## 0.4.2 - 2026-08-24
 
 ### Added

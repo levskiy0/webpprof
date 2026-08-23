@@ -29,12 +29,15 @@ jobs:
       - run: ./scripts/modules.sh vuln
 
   release:
+    # Nested modules are published by their Git tag and proxy.golang.org.
+    # Only a root vX.Y.Z tag gets a GitHub Release page.
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Publish GitHub release
+      - name: Publish root GitHub release
         run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}

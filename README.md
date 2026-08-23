@@ -148,6 +148,10 @@ webpprof-mcp --version
 For a reproducible install, replace `@latest` with `@v0.4.1`.
 The executable is written to `GOBIN`, or `GOPATH/bin` when `GOBIN` is unset.
 
+The MCP command is versioned independently. Its versions are published as
+`cmd/webpprof-mcp/vX.Y.Z` Go module tags through `proxy.golang.org`, without a
+separate GitHub Release. Use `@latest` or pin an exact command version.
+
 Register it in Codex:
 
 ```sh

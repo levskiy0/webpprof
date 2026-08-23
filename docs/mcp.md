@@ -23,6 +23,11 @@ For a reproducible install, use `@v0.4.1`. The corresponding repository tag is
 to `GOBIN`, or to `GOPATH/bin` when `GOBIN` is unset; that directory must be in
 `PATH`.
 
+Command versions are published as module-scoped Git tags and indexed by
+`proxy.golang.org`; they do not receive separate GitHub Release pages. This
+keeps the root webpprof release as the only product release while preserving
+independent SemVer for the MCP binary.
+
 The relative command below is only for contributors working inside a checkout:
 
 ```sh
