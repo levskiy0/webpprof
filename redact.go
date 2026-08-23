@@ -25,7 +25,7 @@ func redact(value any) {
 	case map[string]any:
 		for key, child := range typed {
 			if isSensitiveKey(key) {
-				typed[key] = "[REDACTED]"
+				typed[key] = redactedValue(child)
 				continue
 			}
 			redact(child)
@@ -34,6 +34,25 @@ func redact(value any) {
 		for _, child := range typed {
 			redact(child)
 		}
+	}
+}
+
+func redactedValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			typed[key] = redactedValue(child)
+		}
+		return typed
+	case []any:
+		for index, child := range typed {
+			typed[index] = redactedValue(child)
+		}
+		return typed
+	case nil:
+		return nil
+	default:
+		return "[REDACTED]"
 	}
 }
 

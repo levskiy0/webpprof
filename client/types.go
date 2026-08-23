@@ -78,7 +78,13 @@ func DecodeRequest(entry webpprof.Entry) (RequestSummary, error) {
 	if entry.Kind != webpprof.KindRequest {
 		return RequestSummary{}, errors.New("entry is not a request")
 	}
-	var request webpprof.Request
+	var request struct {
+		Method string `json:"method"`
+		Path   string `json:"path"`
+		Route  string `json:"route,omitempty"`
+		Status int    `json:"status"`
+		Error  string `json:"error,omitempty"`
+	}
 	if err := json.Unmarshal(entry.Data, &request); err != nil {
 		return RequestSummary{}, err
 	}

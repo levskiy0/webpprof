@@ -5,6 +5,15 @@ versioning and are published from `v*` Git tags.
 
 ## Unreleased
 
+## 0.3.2 - 2026-08-23
+
+### Fixed
+
+- Preserved JSON container shapes while redacting sensitive values so captured
+  `Cookie` and `Authorization` headers remain decodable as header arrays.
+- Allowed request summaries, including MCP inspection, to read legacy entries
+  whose sensitive headers were stored as scalar redaction placeholders.
+
 ## 0.3.1 - 2026-08-23
 
 ### Changed

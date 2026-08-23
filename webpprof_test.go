@@ -161,6 +161,39 @@ func TestProfilerRedactsSensitiveFields(t *testing.T) {
 	}
 }
 
+func TestProfilerRedactsSensitiveHTTPHeadersWithoutChangingShape(t *testing.T) {
+	profiler := New(http.NewServeMux())
+	t.Cleanup(func() { _ = profiler.Close() })
+	profiler.LogRequest(Request{
+		Meta:   Meta{ID: "request-with-sensitive-headers"},
+		Method: http.MethodGet,
+		Path:   "/account",
+		Request: HTTPMessage{Headers: map[string][]string{
+			"Authorization": {"Bearer secret-token"},
+			"Cookie":        {"session=secret", "preferences=secret"},
+			"X-Request-ID":  {"request-123"},
+		}},
+	})
+
+	entry, ok := profiler.store.get("request-with-sensitive-headers")
+	if !ok {
+		t.Fatal("request entry not found")
+	}
+	var recorded Request
+	if err := json.Unmarshal(entry.Data, &recorded); err != nil {
+		t.Fatalf("decode request: %v; payload = %s", err, entry.Data)
+	}
+	if got := recorded.Request.Headers["Authorization"]; len(got) != 1 || got[0] != "[REDACTED]" {
+		t.Fatalf("Authorization header = %#v", got)
+	}
+	if got := recorded.Request.Headers["Cookie"]; len(got) != 2 || got[0] != "[REDACTED]" || got[1] != "[REDACTED]" {
+		t.Fatalf("Cookie header = %#v", got)
+	}
+	if got := recorded.Request.Headers["X-Request-ID"]; len(got) != 1 || got[0] != "request-123" {
+		t.Fatalf("X-Request-ID header = %#v", got)
+	}
+}
+
 func TestProfilerLogsSchedulePayload(t *testing.T) {
 	profiler := New(http.NewServeMux())
 	t.Cleanup(func() { _ = profiler.Close() })
