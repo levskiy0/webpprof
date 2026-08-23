@@ -4,7 +4,7 @@ go 1.25.13
 
 require (
 	github.com/hibiken/asynq v0.26.0
-	github.com/levskiy0/webpprof v0.3.0
+	github.com/levskiy0/webpprof v0.3.1
 )
 
 require (

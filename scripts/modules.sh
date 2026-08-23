@@ -20,8 +20,8 @@ run_with_local_core() {
 	fi
 	(
 		cd "$module_dir"
-		go mod edit -replace=github.com/levskiy0/webpprof@v0.3.0="$root_dir"
-		trap 'go mod edit -dropreplace=github.com/levskiy0/webpprof@v0.3.0' EXIT
+		go mod edit -replace=github.com/levskiy0/webpprof@v0.3.1="$root_dir"
+		trap 'go mod edit -dropreplace=github.com/levskiy0/webpprof@v0.3.1' EXIT
 		GOWORK=off "$@"
 	)
 }

@@ -4,7 +4,7 @@ go 1.25.13
 
 require (
 	github.com/labstack/echo/v4 v4.15.4
-	github.com/levskiy0/webpprof v0.3.0
+	github.com/levskiy0/webpprof v0.3.1
 )
 
 require (

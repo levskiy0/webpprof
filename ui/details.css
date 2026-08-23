@@ -718,8 +718,7 @@ pre code {
 }
 
 .relation-row:hover .relation-action,
-.event-row:hover .relation-action,
-.slow-row:hover .relation-action {
+.event-row:hover .relation-action {
   background: #e8e9fb;
   color: #5b5ecb;
   transform: translateX(1px);
@@ -2189,34 +2188,17 @@ pre code {
   min-height: 150px;
 }
 
-.slow-list {
-  display: grid;
+.slow-table .list-heading th {
+  position: static;
 }
 
-.slow-row {
-  display: grid;
-  grid-template-columns: 72px minmax(0, 1fr) auto 24px;
-  min-height: 68px;
-  align-items: center;
-  gap: 9px;
-  padding: 8px 15px;
-  border: 0;
-  border-bottom: 1px solid #eef0f3;
-  background: #fff;
-  text-align: left;
-  cursor: pointer;
-}
-
-.slow-row:last-child {
-  border-bottom: 0;
-}
-
-.slow-row:hover {
-  background: #f8fafc;
+.slow-table .event-row td {
+  height: 49px;
 }
 
 .slow-kind {
-  overflow: hidden;
+  display: inline-block;
+  min-width: 68px;
   border-radius: 4px;
   background: #e9eaee;
   padding: 3px 5px;
@@ -2225,36 +2207,6 @@ pre code {
   text-align: center;
   text-overflow: ellipsis;
   text-transform: uppercase;
-}
-
-.slow-row > span:nth-child(2) {
-  min-width: 0;
-}
-
-.slow-row > span:nth-child(2) strong,
-.slow-row > span:nth-child(2) small {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.slow-row > span:nth-child(2) strong {
-  color: #343a45;
-  font-size: 15px;
-  font-weight: 500;
-}
-
-.slow-row > span:nth-child(2) small {
-  margin-top: 3px;
-  color: #9aa0a9;
-  font-size: 13px;
-}
-
-.slow-row b {
-  color: #59616d;
-  font: 14px "SFMono-Regular", Consolas, monospace;
-  white-space: nowrap;
 }
 
 .dashboard-panel-empty {

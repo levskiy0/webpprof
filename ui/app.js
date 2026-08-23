@@ -96,6 +96,12 @@ function bind(){
     if(!target||!state.events.has(target.dataset.eventId))return;
     openDetail(target.dataset.eventId,"push");
   });
+  elements["dashboard-screen"].addEventListener("keydown",event=>{
+    const row=event.target.closest("tr[data-event-id]");
+    if(!row||event.target!==row||event.key!=="Enter"&&event.key!==" ")return;
+    event.preventDefault();
+    if(state.events.has(row.dataset.eventId))openDetail(row.dataset.eventId,"push");
+  });
   elements.events.addEventListener("click",event=>{
     const row=event.target.closest("[data-id]");
     if(!row)return;
@@ -878,7 +884,7 @@ function dashboardWidgetShell(widget){
   if(widget.kind==="custom_metric")return dashboardMetricShell(widget.id,widget.title,widget.description,attributes,Boolean(widget.metric?.sparkline),true);
   if(widget.kind==="event_mix")return dashboardPanelShell(widget,attributes,"Recorded window",'<div class="mix-list" data-dashboard-mix></div>',"mix-panel");
   if(widget.kind==="queue_health")return dashboardPanelShell(widget,attributes,"Waiting for a stats source",'<div data-dashboard-queues></div>',"queue-panel",'data-dashboard-queue-summary');
-  if(widget.kind==="slowest_operations")return dashboardPanelShell(widget,attributes,"Click to inspect",'<div class="slow-list" data-dashboard-slow></div>',"slow-panel");
+  if(widget.kind==="slowest_operations")return dashboardPanelShell(widget,attributes,"Click to inspect",'<div data-dashboard-slow></div>',"slow-panel");
   if(widget.kind==="custom_chart")return dashboardPanelShell(widget,attributes,"Live series",`<div class="custom-chart" data-dashboard-custom-chart="${escapeHTML(widget.id)}"></div>`,"custom-chart-panel");
   if(widget.kind==="counter_grid")return dashboardPanelShell(widget,attributes,"Latest sample",`<div class="custom-counter-grid" data-dashboard-counter-grid="${escapeHTML(widget.id)}"></div>`,"counter-grid-panel");
   return"";
@@ -1077,8 +1083,12 @@ function formatCount(value){
 
 function slowOperationRows(){
   const operations=visibleEvents().filter(event=>["request","query","http_call"].includes(event.kind)).sort((a,b)=>eventDuration(b)-eventDuration(a)).slice(0,6);
-  const rows=operations.map(event=>`<button type="button" class="slow-row" data-event-id="${escapeHTML(event.id)}"><span class="slow-kind">${escapeHTML(kindSingular(event.kind))}</span><span><strong>${escapeHTML(slowOperationTitle(event))}</strong></span><b>${escapeHTML(duration(event.duration_ns))}</b>${rowAction()}</button>`).join("");
-  return rows||'<div class="dashboard-panel-empty">No timed operations yet.</div>';
+  if(!operations.length)return'<div class="dashboard-panel-empty">No timed operations yet.</div>';
+  const rows=operations.map(event=>{
+    const title=slowOperationTitle(event);
+    return`<tr class="event-row slow-table-row" data-event-id="${escapeHTML(event.id)}" data-kind="${escapeHTML(event.kind)}" tabindex="0" role="link" aria-label="Open ${escapeHTML(kindSingular(event.kind))} details"><td class="table-fit"><span class="slow-kind">${escapeHTML(kindSingular(event.kind))}</span></td><td class="event-entry" title="${escapeHTML(title)}">${entityPreview({title,code:event.kind==="query"},"event-main")}</td><td class="table-fit text-right text-muted"><span class="duration">${escapeHTML(duration(event.duration_ns))}</span></td><td class="table-fit">${tableRowAction()}</td></tr>`;
+  }).join("");
+  return`<table class="event-table slow-table penultimate-column-right"><thead class="list-heading"><tr><th scope="col" class="table-fit">Type</th><th scope="col">Operation</th><th scope="col" class="table-fit text-right">Duration</th><th scope="col" class="table-fit"><span class="sr-only">Open</span></th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function slowOperationTitle(event){

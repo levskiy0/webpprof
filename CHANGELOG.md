@@ -5,6 +5,17 @@ versioning and are published from `v*` Git tags.
 
 ## Unreleased
 
+## 0.3.1 - 2026-08-23
+
+### Changed
+
+- Reworked profiler event indexes and the dashboard's slowest-operations widget
+  as compact, accessible tables aligned with Laravel Telescope's presentation.
+- Refined sidebar typography, list density, event viewport sizing, badges, and
+  action alignment while removing inline tags from event index rows.
+- Rendered captured request and response headers as compact highlighted JSON,
+  collapsing single-value header arrays to one line.
+
 ## 0.3.0 - 2026-08-23
 
 ### Added

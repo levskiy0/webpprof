@@ -117,7 +117,7 @@ go install github.com/levskiy0/webpprof/cmd/webpprof-mcp@latest
 webpprof-mcp --version
 ```
 
-For a reproducible install, replace `@latest` with `@v0.3.0`.
+For a reproducible install, replace `@latest` with `@v0.3.1`.
 The executable is written to `GOBIN`, or `GOPATH/bin` when `GOBIN` is unset.
 
 Register it in Codex:

@@ -18,8 +18,8 @@ go install github.com/levskiy0/webpprof/cmd/webpprof-mcp@latest
 webpprof-mcp --version
 ```
 
-For a reproducible install, use `@v0.3.0`. The corresponding repository tag is
-`cmd/webpprof-mcp/v0.3.0`. `go install` writes the executable
+For a reproducible install, use `@v0.3.1`. The corresponding repository tag is
+`cmd/webpprof-mcp/v0.3.1`. `go install` writes the executable
 to `GOBIN`, or to `GOPATH/bin` when `GOBIN` is unset; that directory must be in
 `PATH`.
 

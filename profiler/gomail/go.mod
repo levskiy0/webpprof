@@ -3,7 +3,7 @@ module github.com/levskiy0/webpprof/profiler/gomail
 go 1.25.13
 
 require (
-	github.com/levskiy0/webpprof v0.3.0
+	github.com/levskiy0/webpprof v0.3.1
 	github.com/wneessen/go-mail v0.7.2
 )
 

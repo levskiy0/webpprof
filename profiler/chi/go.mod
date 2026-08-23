@@ -4,7 +4,7 @@ go 1.25.13
 
 require (
 	github.com/go-chi/chi/v5 v5.3.2
-	github.com/levskiy0/webpprof v0.3.0
+	github.com/levskiy0/webpprof v0.3.1
 )
 
 require (

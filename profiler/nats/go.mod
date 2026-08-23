@@ -3,7 +3,7 @@ module github.com/levskiy0/webpprof/profiler/nats
 go 1.25.13
 
 require (
-	github.com/levskiy0/webpprof v0.3.0
+	github.com/levskiy0/webpprof v0.3.1
 	github.com/nats-io/nats.go v1.53.1
 )
 
