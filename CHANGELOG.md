@@ -5,6 +5,14 @@ versioning and are published from `v*` Git tags.
 
 ## Unreleased
 
+## 0.2.1 - 2026-08-23
+
+### Changed
+
+- Published the core library, MCP command, and every optional profiler module
+  with matching `v0.2.1` module tags.
+- Aligned all nested Go modules and local workspace tooling on core `v0.2.1`.
+
 ## 0.2.0 - 2026-08-23
 
 ### Added

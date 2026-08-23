@@ -4,7 +4,7 @@ go 1.25.13
 
 require (
 	github.com/gin-gonic/gin v1.12.0
-	github.com/levskiy0/webpprof v0.2.0
+	github.com/levskiy0/webpprof v0.2.1
 )
 
 require (

@@ -3,7 +3,7 @@ module github.com/levskiy0/webpprof/profiler/zerolog
 go 1.25.13
 
 require (
-	github.com/levskiy0/webpprof v0.2.0
+	github.com/levskiy0/webpprof v0.2.1
 	github.com/rs/zerolog v1.35.1
 )
 

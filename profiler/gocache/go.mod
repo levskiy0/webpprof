@@ -4,7 +4,7 @@ go 1.25.13
 
 require (
 	github.com/levskiy0/go-cache v1.1.1
-	github.com/levskiy0/webpprof v0.2.0
+	github.com/levskiy0/webpprof v0.2.1
 )
 
 require (

@@ -95,7 +95,7 @@ webpprof library does not install this binary. Install it from any directory by
 using its full module path:
 
 ```sh
-go install github.com/levskiy0/webpprof/cmd/webpprof-mcp@v0.2.0
+go install github.com/levskiy0/webpprof/cmd/webpprof-mcp@v0.2.1
 webpprof-mcp --version
 ```
 
@@ -173,13 +173,13 @@ Install the standalone MCP binary (the webpprof library alone does not install
 it):
 
 ```sh
-go install github.com/levskiy0/webpprof/cmd/webpprof-mcp@v0.2.0
+go install github.com/levskiy0/webpprof/cmd/webpprof-mcp@v0.2.1
 webpprof-mcp --version
 ```
 
 This works outside the repository because `cmd/webpprof-mcp` is published as
 its own Go module. Releases use the matching module tag
-`cmd/webpprof-mcp/v0.2.0`; use `@latest` to follow the newest published tag.
+`cmd/webpprof-mcp/v0.2.1`; use `@latest` to follow the newest published tag.
 
 Start the application profiler on loopback with a token shared through the
 environment:
