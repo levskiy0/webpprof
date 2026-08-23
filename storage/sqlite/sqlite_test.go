@@ -125,6 +125,48 @@ func TestStoragePersistsRetentionPruning(t *testing.T) {
 	}
 }
 
+func BenchmarkProfilerSQLiteSteadyStateEviction(b *testing.B) {
+	const maxEvents = 10_000
+	path := filepath.Join(b.TempDir(), "webpprof.db")
+	storage, err := Open(context.Background(), path)
+	if err != nil {
+		b.Fatal(err)
+	}
+	profiler := webpprof.New(
+		http.NewServeMux(),
+		webpprof.WithStorage(storage),
+		webpprof.WithMaxEvents(maxEvents),
+	)
+	b.Cleanup(func() {
+		if err := profiler.Close(); err != nil {
+			b.Error(err)
+		}
+	})
+
+	events := make([]webpprof.Event, maxEvents+1)
+	startedAt := time.Now()
+	for index := range events {
+		events[index] = webpprof.Event{
+			Meta: webpprof.Meta{ID: fmt.Sprintf("benchmark-%d", index), StartedAt: startedAt},
+			Kind: "benchmark",
+			Name: "event",
+		}
+	}
+	for index := 0; index < maxEvents; index++ {
+		profiler.LogEvent(events[index])
+	}
+
+	b.ReportAllocs()
+	index := maxEvents
+	for b.Loop() {
+		profiler.LogEvent(events[index])
+		index++
+		if index == len(events) {
+			index = 0
+		}
+	}
+}
+
 func newProfiler(t *testing.T, mux *http.ServeMux, path string) *webpprof.Profiler {
 	t.Helper()
 	storage, err := Open(context.Background(), path)

@@ -107,6 +107,13 @@ by `Profiler.Close`; do not close it separately. When several storage options
 are supplied, only the last is active and the caller remains responsible for
 closing any backend that was replaced during configuration.
 
+External storage calls run after webpprof releases its shared event-store
+mutex, so readers and other in-memory operations are not blocked by backend
+I/O. The goroutine recording the event still waits synchronously for `Put` and
+any required eviction `Delete` to finish. Keep SQLite on local storage for
+development diagnostics, and avoid slow or remote `EntryStorage`
+implementations on latency-sensitive capture paths.
+
 `WithStoragePath` remains available for the append-only JSONL journal. It is
 replayed on restart and compacted automatically. The last configured storage
 option wins.

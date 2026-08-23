@@ -211,13 +211,9 @@ func (s *Service) SearchEvents(ctx context.Context, input SearchEventsInput) (Se
 	if scanned == 0 && len(page.Events) > 0 {
 		scanned = len(page.Events)
 	}
-	query := strings.ToLower(strings.TrimSpace(input.Query))
 	output := SearchEventsOutput{Events: make([]EventSummary, 0, limit), Scanned: scanned, HasMore: page.HasMore, Cursor: page.Stats.Cursor}
 	for index := len(page.Events) - 1; index >= 0 && len(output.Events) < limit; index-- {
 		entry := page.Events[index]
-		if query != "" && !strings.Contains(strings.ToLower(string(entry.Data)), query) {
-			continue
-		}
 		output.Events = append(output.Events, summarizeEntry(entry, false))
 	}
 	return output, nil

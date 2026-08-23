@@ -60,10 +60,18 @@ eviction per operation. Results on Go 1.25.13, darwin/arm64, Apple M3 Pro:
 | Event kind disabled | 52 ns | 224 B | 1 |
 | In-memory, steady-state eviction | 3.89 µs | 4,162 B | 51 |
 | JSONL journal, steady-state eviction | 8.82 µs | 5,204 B | 60 |
+| SQLite, steady-state eviction | 73.4 µs | 5,790 B | 88 |
 
-Run `go test . -run '^$' -bench BenchmarkProfilerOverhead -benchmem -count=6`
-on deployment-like hardware before enabling additional capture kinds in a hot
-path. These numbers are a reproducible reference, not a latency guarantee.
+Run both benchmark suites on deployment-like hardware:
+
+```sh
+go test . -run '^$' -bench BenchmarkProfilerOverhead -benchmem -count=6
+go test ./storage/sqlite -run '^$' -bench BenchmarkProfilerSQLiteSteadyStateEviction -benchmem -count=6
+```
+
+The SQLite row includes synchronous eviction and write I/O. Run the relevant
+suite before enabling additional capture kinds in a hot path. These numbers are
+a reproducible reference, not a latency guarantee.
 
 ## Getting started
 
@@ -133,7 +141,7 @@ go install github.com/levskiy0/webpprof/cmd/webpprof-mcp@latest
 webpprof-mcp --version
 ```
 
-For a reproducible install, replace `@latest` with `@v0.4.0`.
+For a reproducible install, replace `@latest` with `@v0.4.1`.
 The executable is written to `GOBIN`, or `GOPATH/bin` when `GOBIN` is unset.
 
 Register it in Codex:

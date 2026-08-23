@@ -5,6 +5,19 @@ versioning and are published from `v*` Git tags.
 
 ## Unreleased
 
+## 0.4.1 - 2026-08-24
+
+### Added
+
+- Added an end-to-end SQLite steady-state eviction benchmark in the optional
+  `storage/sqlite` module.
+
+### Fixed
+
+- Kept MCP search results matched by server-side entry metadata such as ID,
+  process, instance, kind, request correlation, or tags instead of rechecking
+  only the event payload locally.
+
 ## 0.4.0 - 2026-08-24
 
 ### Added

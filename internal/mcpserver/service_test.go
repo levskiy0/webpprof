@@ -140,6 +140,46 @@ func TestServiceSearchEventsForwardsServerFilters(t *testing.T) {
 	}
 }
 
+func TestServiceSearchEventsTrustsServerQueryMatches(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		query string
+		entry webpprof.Entry
+	}{
+		{
+			name:  "entry ID",
+			query: "matching-id",
+			entry: webpprof.Entry{ID: "matching-id", Kind: webpprof.KindEvent, Data: json.RawMessage(`{"name":"unrelated"}`)},
+		},
+		{
+			name:  "process",
+			query: "worker-42",
+			entry: webpprof.Entry{ID: "event-1", Kind: webpprof.KindEvent, Process: "worker-42", Data: json.RawMessage(`{"name":"unrelated"}`)},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeProfilerClient{page: client.EventPage{Events: []webpprof.Entry{test.entry}, Scanned: 1}}
+			service, err := New(fake)
+			if err != nil {
+				t.Fatal(err)
+			}
+			output, err := service.SearchEvents(t.Context(), SearchEventsInput{Query: test.query})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(output.Events) != 1 || output.Events[0].ID != test.entry.ID {
+				t.Fatalf("SearchEvents() = %+v", output)
+			}
+			if fake.listOptions.Query != test.query {
+				t.Fatalf("ListEvents() query = %q", fake.listOptions.Query)
+			}
+		})
+	}
+}
+
 func TestServiceWaitForRequestBoundsTimeoutAndConvertsDuration(t *testing.T) {
 	t.Parallel()
 
