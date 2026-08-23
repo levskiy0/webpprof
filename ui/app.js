@@ -1,6 +1,7 @@
 const state={events:new Map(),analyses:new Map(),analysisPending:new Set(),sessionMode:"live",kind:"request",selected:"",queryTab:"query",entityTab:"",requestTab:"payload",responseTab:"response",relatedTab:"query",screen:"dashboard",paused:false,pending:[],socket:null,reconnect:0,reconnectTimer:0,socketStableTimer:0,runtime:[],queueStats:{sources:[]},dashboard:{widgets:[]},dashboardHistory:new Map(),stats:{},hasMore:false,loadingMore:false,loadMoreError:"",virtualItems:[],virtualStart:-1,virtualEnd:-1,virtualFrame:0,watchedTags:new Set(),filters:{}};
 const pageSize=250;
-const virtualRowHeight=70;
+const virtualRowHeight=49;
+const listHeadingHeight=38;
 const virtualOverscan=8;
 const virtualPreloadRows=12;
 const kinds=["request","middleware","query","cache","job","email","log","http_call","schedule","exception","event",""];
@@ -9,7 +10,7 @@ const methodFilterKinds=new Set(["request","http_call"]);
 const durationFilterKinds=new Set(["request","middleware","query","cache","job","email","http_call","schedule","event",""]);
 const filterParamKeys=["method","status","operation","connection","database","result","store","queue","transport","host","level","state","type","kind"];
 const sqlKeywords=new Set("ADD ALL ALTER ANALYZE AND AS ASC BETWEEN BY CASE CHECK COLUMN CONSTRAINT CREATE CROSS CURRENT_DATE CURRENT_TIME CURRENT_TIMESTAMP DATABASE DEFAULT DELETE DESC DISTINCT DROP ELSE END EXISTS EXPLAIN FALSE FOREIGN FROM FULL GROUP HAVING IN INDEX INNER INSERT INTERSECT INTO IS JOIN KEY LEFT LIKE LIMIT NATURAL NOT NULL OFFSET ON OR ORDER OUTER PRIMARY REFERENCES RETURNING RIGHT SELECT SET TABLE THEN TRUE UNION UNIQUE UPDATE USING VALUES WHEN WHERE WITH".split(" "));
-const ids=["login","workspace","login-form","login-error","token","socket-status","event-count","capacity-status","storage-note","import-session","session-file","export-session","pause","clear","tag-watcher","tag-watch-count","tag-watch-clear","tag-watch-search","tag-watch-selected","tag-watch-results-count","tag-watch-options","kinds","search","filter-toggle","filter-count","filter-clear","filters-drawer","filter-summary","entity-filters","time-filter","time-range","time-custom","time-from","time-to","duration-filter","duration","list-heading","events","empty","pagination","load-more","pagination-status","detail","dashboard-screen","index-screen","detail-screen","screen-title","back"];
+const ids=["login","workspace","login-form","login-error","token","socket-status","event-count","capacity-status","storage-note","import-session","session-file","export-session","pause","clear","tag-watcher","tag-watch-count","tag-watch-clear","tag-watch-search","tag-watch-selected","tag-watch-results-count","tag-watch-options","kinds","search","filter-toggle","filter-count","filter-clear","filters-drawer","filter-summary","entity-filters","time-filter","time-range","time-custom","time-from","time-to","duration-filter","duration","list-heading","events","event-rows","empty","pagination","load-more","pagination-status","detail","dashboard-screen","index-screen","detail-screen","screen-title","back"];
 const elements=Object.fromEntries(ids.map(id=>[id,document.getElementById(id)]));
 const base=()=>location.pathname.replace(/\/$/,"");
 
@@ -98,6 +99,12 @@ function bind(){
   elements.events.addEventListener("click",event=>{
     const row=event.target.closest("[data-id]");
     if(!row)return;
+    openDetail(row.dataset.id);
+  });
+  elements.events.addEventListener("keydown",event=>{
+    const row=event.target.closest("tr[data-id]");
+    if(!row||event.target!==row||event.key!=="Enter"&&event.key!==" ")return;
+    event.preventDefault();
     openDetail(row.dataset.id);
   });
   elements.detail.addEventListener("click",event=>{
@@ -551,7 +558,7 @@ function scheduleVirtualRows(){
 function renderVirtualList(events){
   const viewport=elements.events;
   const previous=state.virtualItems;
-  const previousTop=viewport.scrollTop;
+  const previousTop=Math.max(0,viewport.scrollTop-listHeadingHeight);
   const pinnedToTop=previousTop<virtualRowHeight/2;
   const anchorIndex=Math.min(previous.length-1,Math.max(0,Math.floor(previousTop/virtualRowHeight)));
   const anchor=previous[anchorIndex];
@@ -564,7 +571,7 @@ function renderVirtualList(events){
     viewport.scrollTop=0;
   }else if(anchor){
     const nextIndex=events.findIndex(event=>event.id===anchor.id);
-    viewport.scrollTop=nextIndex>=0?nextIndex*virtualRowHeight+anchorOffset:0;
+    viewport.scrollTop=nextIndex>=0?listHeadingHeight+nextIndex*virtualRowHeight+anchorOffset:0;
   }else if(!previous.length||!events.length){
     viewport.scrollTop=0;
   }
@@ -574,34 +581,40 @@ function renderVirtualList(events){
 function renderVirtualRows(force=false){
   if(state.screen!=="index")return;
   const viewport=elements.events;
+  const rows=elements["event-rows"];
   const total=state.virtualItems.length;
   if(!total){
-    viewport.replaceChildren();
+    rows.replaceChildren();
     return;
   }
-  const visibleHeight=Math.max(viewport.clientHeight,virtualRowHeight);
-  const start=Math.max(0,Math.floor(viewport.scrollTop/virtualRowHeight)-virtualOverscan);
-  const end=Math.min(total,Math.ceil((viewport.scrollTop+visibleHeight)/virtualRowHeight)+virtualOverscan);
+  const scrollTop=Math.max(0,viewport.scrollTop-listHeadingHeight);
+  const visibleHeight=Math.max(viewport.clientHeight-listHeadingHeight,virtualRowHeight);
+  const start=Math.max(0,Math.floor(scrollTop/virtualRowHeight)-virtualOverscan);
+  const end=Math.min(total,Math.ceil((scrollTop+visibleHeight)/virtualRowHeight)+virtualOverscan);
   if(!force&&start===state.virtualStart&&end===state.virtualEnd)return;
   state.virtualStart=start;
   state.virtualEnd=end;
 
   const fragment=document.createDocumentFragment();
-  fragment.append(virtualSpacer(start*virtualRowHeight,"top"));
+  const columns=listColumnCount(listLayout(state.kind));
+  fragment.append(virtualSpacer(start*virtualRowHeight,"top",columns));
   for(let index=start;index<end;index++){
     const item=row(state.virtualItems[index]);
     fragment.append(item);
   }
-  fragment.append(virtualSpacer((total-end)*virtualRowHeight,"bottom"));
-  viewport.replaceChildren(fragment);
+  fragment.append(virtualSpacer((total-end)*virtualRowHeight,"bottom",columns));
+  rows.replaceChildren(fragment);
 }
 
-function virtualSpacer(height,position){
-  const spacer=document.createElement("div");
+function virtualSpacer(height,position,columns){
+  const spacer=document.createElement("tr");
   spacer.className="virtual-spacer";
   spacer.dataset.position=position;
-  spacer.style.height=`${Math.max(0,height)}px`;
   spacer.setAttribute("aria-hidden","true");
+  const cell=document.createElement("td");
+  cell.colSpan=columns;
+  cell.style.height=`${Math.max(0,height)}px`;
+  spacer.append(cell);
   return spacer;
 }
 
@@ -834,8 +847,7 @@ function renderEntityFilters(){
 
 function renderListHeading(){
   const layout=listLayout(state.kind);
-  elements["list-heading"].className=`list-heading${listLayoutClasses(layout)}`;
-  elements["list-heading"].innerHTML=`${layout.badge?`<span>${escapeHTML(layout.badge)}</span>`:""}<span>${escapeHTML(layout.entry)}</span>${layout.status?`<span>${escapeHTML(layout.status)}</span>`:""}${layout.duration?'<span class="list-duration">Duration</span>':""}<span class="list-time">Happened</span><span class="list-action-spacer" aria-hidden="true"></span>`;
+  elements["list-heading"].innerHTML=`<tr>${layout.badge?`<th scope="col" class="table-fit">${escapeHTML(layout.badge)}</th>`:""}<th scope="col">${escapeHTML(layout.entry)}</th>${layout.status?`<th scope="col" class="table-fit text-center">${escapeHTML(layout.status)}</th>`:""}${layout.duration?'<th scope="col" class="table-fit text-right">Duration</th>':""}<th scope="col" class="table-fit">Happened</th><th scope="col" class="table-fit"><span class="sr-only">Open</span></th></tr>`;
 }
 
 function renderDashboard(){
@@ -1276,38 +1288,41 @@ function syncLocation(mode="replace"){
 }
 
 function row(event){
-  const button=document.createElement("button");
+  const tableRow=document.createElement("tr");
   const status=statusFor(event);
   const layout=listLayout(state.kind);
   const badge=layout.badge?listBadge(event):null;
-  button.type="button";
-  button.className=`event-row${listLayoutClasses(layout)}${state.selected===event.id?" active":""}`;
-  button.dataset.id=event.id;
-  button.dataset.kind=event.kind;
-  button.innerHTML=`${badge?`<span><span class="method${badge.className?` ${escapeHTML(badge.className)}`:""}" title="${escapeHTML(badge.label)}">${escapeHTML(badge.label)}</span></span>`:""}${eventPreview(event)}${layout.status?`<span class="state ${status.className}">${escapeHTML(status.label)}</span>`:""}${layout.duration?`<span class="duration">${duration(event.duration_ns)}</span>`:""}<span class="event-time">${relativeTime(event.started_at)}</span>${rowAction()}`;
-  return button;
+  tableRow.className=`event-row${state.selected===event.id?" active":""}`;
+  tableRow.dataset.id=event.id;
+  tableRow.dataset.kind=event.kind;
+  tableRow.tabIndex=0;
+  tableRow.setAttribute("role","link");
+  tableRow.setAttribute("aria-label",`Open ${kindSingular(event.kind)} details`);
+  const title=eventPreviewTitle(event);
+  tableRow.innerHTML=`${badge?`<td class="table-fit pr-0"><span class="method${badge.className?` ${escapeHTML(badge.className)}`:""}" title="${escapeHTML(badge.label)}">${escapeHTML(badge.label)}</span></td>`:""}<td class="event-entry" title="${escapeHTML(title)}">${eventPreview(event)}</td>${layout.status?`<td class="table-fit text-center"><span class="state ${status.className}">${escapeHTML(status.label)}</span></td>`:""}${layout.duration?`<td class="table-fit text-right text-muted"><span class="duration">${duration(event.duration_ns)}</span></td>`:""}<td class="table-fit text-muted event-time" data-timeago="${escapeHTML(event.started_at||"")}" title="${escapeHTML(event.started_at||"")}">${relativeTime(event.started_at)}</td><td class="table-fit">${tableRowAction()}</td>`;
+  return tableRow;
 }
 
 function listLayout(kind){
   const layouts={
     "":{badge:"Type",entry:"Entry",status:"Status",duration:true},
-    request:{badge:"Method",entry:"Path",status:"Status",duration:true},
+    request:{badge:"Verb",entry:"Path",status:"Status",duration:true},
     middleware:{badge:"",entry:"Middleware",status:"State",duration:true},
-    query:{badge:"Operation",entry:"Query",status:"Status",duration:true},
+    query:{badge:"",entry:"Query",status:"",duration:true},
     cache:{badge:"Operation",entry:"Key",status:"Result",duration:true},
     job:{badge:"Queue",entry:"Job",status:"State",duration:true},
     email:{badge:"Transport",entry:"Subject",status:"Status",duration:true},
     log:{badge:"Level",entry:"Message",status:"",duration:false},
     http_call:{badge:"Method",entry:"URL",status:"Status",duration:true},
     schedule:{badge:"",entry:"Task",status:"State",duration:true},
-    exception:{badge:"Type",entry:"Message",status:"",duration:false,wideBadge:true},
+    exception:{badge:"Type",entry:"Message",status:"",duration:false},
     event:{badge:"",entry:"Event",status:"Status",duration:true}
   };
   return layouts[kind]||layouts[""];
 }
 
-function listLayoutClasses(layout){
-  return`${layout.badge?"":" without-badge"}${layout.status?"":" without-status"}${layout.duration?"":" without-duration"}${layout.wideBadge?" wide-badge":""}`;
+function listColumnCount(layout){
+  return 3+Number(Boolean(layout.badge))+Number(Boolean(layout.status))+Number(Boolean(layout.duration));
 }
 
 function listBadge(event){
@@ -1342,7 +1357,7 @@ function kindSingular(kind){
 
 function eventPreview(event){
   const data=event.data||{};
-  if(event.kind==="request")return`<span class="event-main entity-preview"><strong>${escapeHTML(requestTarget(data))}</strong>${inlineTags(event.tags)}</span>`;
+  if(event.kind==="request")return entityPreview({title:requestTarget(data)},"event-main");
   let content;
   if(state.kind==="middleware")content={title:data.name||"Middleware"};
   else if(state.kind==="query")content={title:compactQuery(data.sql||""),full:data.sql||"",code:true};
@@ -1354,11 +1369,18 @@ function eventPreview(event){
   else if(state.kind==="schedule")content={title:data.name||"Scheduled task"};
   else if(state.kind==="exception")content={title:data.message||"Exception"};
   else if(state.kind==="event")content={title:data.name||data.summary||"Event"};
-  return entityPreview(content||relationContent(event.kind,event,data),"event-main",event.tags,event.kind==="event"?data.kind||"event":"");
+  return entityPreview(content||relationContent(event.kind,event,data),"event-main");
 }
 
-function entityPreview(content,className="",tags,kindTag=""){
-  return`<span class="entity-preview ${className}">${content.code?`<code>${escapeHTML(content.title)}</code>`:`<strong>${escapeHTML(content.title)}</strong>`}${inlineTags(tags,kindTag)}</span>`;
+function eventPreviewTitle(event){
+  const data=event.data||{};
+  if(event.kind==="request")return requestTarget(data);
+  const content=relationContent(event.kind,event,data);
+  return content.full||content.title||kindSingular(event.kind);
+}
+
+function entityPreview(content,className=""){
+  return`<span class="entity-preview ${className}">${content.code?`<code>${escapeHTML(content.title)}</code>`:`<strong>${escapeHTML(content.title)}</strong>`}</span>`;
 }
 
 function renderDetail(event){
@@ -1650,12 +1672,6 @@ function tagList(tags){
   return`<span class="tag-list">${Object.entries(tags).map(([name,value])=>{const token=`${name}=${value}`;return`<button type="button" data-watch-tag="${escapeHTML(token)}" title="Watch ${escapeHTML(token)}">${escapeHTML(name)}${value?`: ${escapeHTML(value)}`:""}</button>`}).join("")}</span>`;
 }
 
-function inlineTags(tags,kindTag=""){
-  const entries=Object.entries(tags||{}).slice(0,3);
-  if(!kindTag&&!entries.length)return"";
-  return`<span class="inline-tags">${kindTag?`<i class="event-kind-tag" title="Kind">${escapeHTML(kindTag)}</i>`:""}${entries.map(([name,value])=>`<i>${escapeHTML(name)}${value?`=${escapeHTML(value)}`:""}</i>`).join("")}</span>`;
-}
-
 function requestLink(request){
   const data=request.data||{};
   return`<button type="button" class="entity-reference" data-event-id="${escapeHTML(request.id)}"><span class="method method-${escapeHTML((data.method||"http").toLowerCase())}">${escapeHTML(data.method||"HTTP")}</span><span><strong>${escapeHTML(requestTarget(data))}</strong><small>View parent request</small></span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5a7.5 7.5 0 1 0 0 15 7.5 7.5 0 0 0 0-15ZM8.3 6.7l3.6 3.3-3.6 3.3M11.7 10H6.2"/></svg></button>`;
@@ -1785,8 +1801,10 @@ function highlightJSON(json){
 
 function headersPanel(headers,emptyMessage){
   if(!headers||!Object.keys(headers).length)return`<div class="panel-empty">${escapeHTML(emptyMessage)}</div>`;
-  const rows=Object.entries(headers).sort(([a],[b])=>a.localeCompare(b)).map(([name,values])=>`<tr><th>${escapeHTML(name)}</th><td>${escapeHTML(headerValue(values))}</td></tr>`).join("");
-  return`<div class="table-wrap"><table class="headers"><tbody>${rows}</tbody></table></div>`;
+  const compact=Object.fromEntries(Object.entries(headers)
+    .sort(([a],[b])=>a.localeCompare(b))
+    .map(([name,value])=>[name,Array.isArray(value)&&value.length===1?value[0]:value]));
+  return rawBlock(compact,"headers-json");
 }
 
 function headerCount(headers){
@@ -1910,11 +1928,15 @@ function relationRow(kind,event,withStatus){
   const data=event.data||{};
   const status=statusFor(event);
   const content=relationContent(kind,event,data);
-  return`<button type="button" class="relation-row${withStatus?" with-status":""}" data-event-id="${escapeHTML(event.id)}" title="${escapeHTML(content.full||content.title)}">${entityPreview(content,"relation-primary",event.tags)}${withStatus?`<span class="relation-result"><span class="state ${status.className}">${escapeHTML(status.label)}</span></span>`:""}<span class="relation-duration">${escapeHTML(duration(event.duration_ns))}</span>${rowAction()}</button>`;
+  return`<button type="button" class="relation-row${withStatus?" with-status":""}" data-event-id="${escapeHTML(event.id)}" title="${escapeHTML(content.full||content.title)}">${entityPreview(content,"relation-primary")}${withStatus?`<span class="relation-result"><span class="state ${status.className}">${escapeHTML(status.label)}</span></span>`:""}<span class="relation-duration">${escapeHTML(duration(event.duration_ns))}</span>${rowAction()}</button>`;
 }
 
 function rowAction(){
   return`<span class="relation-action" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M10 2.5a7.5 7.5 0 1 0 0 15 7.5 7.5 0 0 0 0-15ZM8.3 6.7l3.6 3.3-3.6 3.3M11.7 10H6.2"/></svg></span>`;
+}
+
+function tableRowAction(){
+  return`<button type="button" class="control-action" aria-label="Open event details"><svg viewBox="0 0 20 20" aria-hidden="true"><path fill-rule="evenodd" d="M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16ZM6.75 9.25a.75.75 0 0 0 0 1.5h4.59l-2.1 1.95a.75.75 0 0 0 1.02 1.1l3.5-3.25a.75.75 0 0 0 0-1.1l-3.5-3.25a.75.75 0 1 0-1.02 1.1l2.1 1.95H6.75Z" clip-rule="evenodd"/></svg></button>`;
 }
 
 function relationContent(kind,event,data){
@@ -2079,8 +2101,9 @@ function formatMilliseconds(value){
   return value>=1000?`${(value/1000).toFixed(2)} s`:`${value.toFixed(value>=10?1:2)} ms`;
 }
 
-function rawBlock(value){
-  return`<pre class="json"><code>${highlightJSON(JSON.stringify(value??{},null,2))}</code></pre>`;
+function rawBlock(value,className=""){
+  const classes=["json",className].filter(Boolean).join(" ");
+  return`<pre class="${classes}"><code>${highlightJSON(JSON.stringify(value??{},null,2))}</code></pre>`;
 }
 
 function sqlPanel(sql){
@@ -2229,11 +2252,6 @@ function normalizedLogLevel(value){
 function address(value){
   if(!value)return"";
   return value.name?`${value.name} <${value.email}>`:value.email||"";
-}
-
-function headerValue(value){
-  if(Array.isArray(value))return value.join(", ");
-  return value??"";
 }
 
 function duration(ns=0){

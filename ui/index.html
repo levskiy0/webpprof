@@ -74,8 +74,12 @@
               </section>
             </div>
             <div class="list-content">
-              <div id="list-heading" class="list-heading"><span>Method</span><span>Path</span><span>Status</span><span class="list-duration">Duration</span><span class="list-time">Happened</span><span class="list-action-spacer" aria-hidden="true"></span></div>
-              <div id="events" class="events" aria-label="Profiler events" tabindex="0"></div>
+              <div id="events" class="events" aria-label="Profiler events" tabindex="0">
+                <table class="table table-hover mb-0 penultimate-column-right event-table">
+                  <thead id="list-heading" class="list-heading"><tr><th scope="col">Verb</th><th scope="col">Path</th><th scope="col" class="text-center">Status</th><th scope="col" class="text-right">Duration</th><th scope="col">Happened</th><th scope="col"></th></tr></thead>
+                  <tbody id="event-rows"></tbody>
+                </table>
+              </div>
               <div id="empty" class="empty">Waiting for matching events…</div>
               <div id="pagination" class="pagination hidden"><button id="load-more" type="button">Load older events</button><span id="pagination-status"></span></div>
             </div>
