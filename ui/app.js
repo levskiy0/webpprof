@@ -1,5 +1,8 @@
-const state={events:new Map(),analyses:new Map(),analysisPending:new Set(),sessionMode:"live",kind:"request",selected:"",queryTab:"query",entityTab:"",requestTab:"payload",responseTab:"response",relatedTab:"query",screen:"dashboard",paused:false,pending:[],socket:null,reconnect:0,reconnectTimer:0,socketStableTimer:0,runtime:[],queueStats:{sources:[]},dashboard:{widgets:[]},dashboardHistory:new Map(),stats:{},hasMore:false,loadingMore:false,watchedTags:new Set(),filters:{}};
+const state={events:new Map(),analyses:new Map(),analysisPending:new Set(),sessionMode:"live",kind:"request",selected:"",queryTab:"query",entityTab:"",requestTab:"payload",responseTab:"response",relatedTab:"query",screen:"dashboard",paused:false,pending:[],socket:null,reconnect:0,reconnectTimer:0,socketStableTimer:0,runtime:[],queueStats:{sources:[]},dashboard:{widgets:[]},dashboardHistory:new Map(),stats:{},hasMore:false,loadingMore:false,loadMoreError:"",virtualItems:[],virtualStart:-1,virtualEnd:-1,virtualFrame:0,watchedTags:new Set(),filters:{}};
 const pageSize=250;
+const virtualRowHeight=70;
+const virtualOverscan=8;
+const virtualPreloadRows=12;
 const kinds=["request","middleware","query","cache","job","email","log","http_call","schedule","exception","event",""];
 const navItems=["dashboard",...kinds];
 const methodFilterKinds=new Set(["request","http_call"]);
@@ -47,6 +50,7 @@ function bind(){
   elements.pause.addEventListener("click",togglePause);
   elements.clear.addEventListener("click",clearEvents);
   elements["load-more"].addEventListener("click",loadMoreEvents);
+  elements.events.addEventListener("scroll",handleVirtualScroll,{passive:true});
   elements["filter-toggle"].addEventListener("click",toggleFilterDrawer);
   elements["filter-clear"].addEventListener("click",()=>{
     resetListFilters();
@@ -166,8 +170,14 @@ function bind(){
     renderKinds();
     render();
   });
+  window.addEventListener("resize",scheduleVirtualRows,{passive:true});
   document.addEventListener("keydown",event=>{
     if(event.key==="Escape"&&!elements["filters-drawer"].classList.contains("hidden"))setFilterDrawer(false);
+  });
+  document.addEventListener("pointerdown",event=>{
+    const drawer=elements["filters-drawer"];
+    if(drawer.classList.contains("hidden")||drawer.contains(event.target)||elements["filter-toggle"].contains(event.target))return;
+    setFilterDrawer(false);
   });
 }
 
@@ -386,11 +396,31 @@ function scheduleReconnect(){
 
 function receiveStats(update){
   if(update.stats)state.stats=update.stats;
+  reconcileLoadedEvents();
   if(update.runtime)recordRuntime(update.runtime);
   if(update.queues)state.queueStats=update.queues;
   if(update.dashboard)recordDashboardSnapshot(update.dashboard);
   updateCapacityStatus();
   if(state.screen==="dashboard")updateDashboard();
+}
+
+function reconcileLoadedEvents(){
+  if(state.sessionMode!=="live")return;
+  const retained=Number(state.stats.events);
+  if(!Number.isFinite(retained)||retained<0||state.events.size<=retained)return;
+  const excess=state.events.size-retained;
+  const expired=[...state.events.values()].sort((left,right)=>(Number(left.cursor)||0)-(Number(right.cursor)||0)).slice(0,excess);
+  for(const event of expired){
+    state.events.delete(event.id);
+    state.analyses.delete(event.id);
+    state.analysisPending.delete(event.id);
+  }
+  if(state.selected&&!state.events.has(state.selected)){
+    state.selected="";
+    if(state.screen==="detail")state.screen="index";
+  }
+  renderTagWatcher();
+  scheduleRender();
 }
 
 function recordDashboardSnapshot(snapshot){
@@ -486,6 +516,7 @@ async function loadMoreEvents(){
   const before=Math.min(...cursors);
   if(!Number.isFinite(before))return;
   state.loadingMore=true;
+  state.loadMoreError="";
   renderPagination();
   try{
     const result=await api(`/api/events?limit=${pageSize}&before=${before}`);
@@ -495,10 +526,83 @@ async function loadMoreEvents(){
     renderTagWatcher();
     renderKinds();
     render();
+  }catch(error){
+    state.loadMoreError=error.message||"Could not load older events";
   }finally{
     state.loadingMore=false;
     renderPagination();
   }
+}
+
+function handleVirtualScroll(){
+  scheduleVirtualRows();
+  const remaining=elements.events.scrollHeight-elements.events.scrollTop-elements.events.clientHeight;
+  if(remaining<=virtualRowHeight*virtualPreloadRows)loadMoreEvents();
+}
+
+function scheduleVirtualRows(){
+  if(state.virtualFrame)return;
+  state.virtualFrame=requestAnimationFrame(()=>{
+    state.virtualFrame=0;
+    renderVirtualRows();
+  });
+}
+
+function renderVirtualList(events){
+  const viewport=elements.events;
+  const previous=state.virtualItems;
+  const previousTop=viewport.scrollTop;
+  const pinnedToTop=previousTop<virtualRowHeight/2;
+  const anchorIndex=Math.min(previous.length-1,Math.max(0,Math.floor(previousTop/virtualRowHeight)));
+  const anchor=previous[anchorIndex];
+  const anchorOffset=previousTop-anchorIndex*virtualRowHeight;
+
+  state.virtualItems=events;
+  state.virtualStart=-1;
+  state.virtualEnd=-1;
+  if(pinnedToTop){
+    viewport.scrollTop=0;
+  }else if(anchor){
+    const nextIndex=events.findIndex(event=>event.id===anchor.id);
+    viewport.scrollTop=nextIndex>=0?nextIndex*virtualRowHeight+anchorOffset:0;
+  }else if(!previous.length||!events.length){
+    viewport.scrollTop=0;
+  }
+  renderVirtualRows(true);
+}
+
+function renderVirtualRows(force=false){
+  if(state.screen!=="index")return;
+  const viewport=elements.events;
+  const total=state.virtualItems.length;
+  if(!total){
+    viewport.replaceChildren();
+    return;
+  }
+  const visibleHeight=Math.max(viewport.clientHeight,virtualRowHeight);
+  const start=Math.max(0,Math.floor(viewport.scrollTop/virtualRowHeight)-virtualOverscan);
+  const end=Math.min(total,Math.ceil((viewport.scrollTop+visibleHeight)/virtualRowHeight)+virtualOverscan);
+  if(!force&&start===state.virtualStart&&end===state.virtualEnd)return;
+  state.virtualStart=start;
+  state.virtualEnd=end;
+
+  const fragment=document.createDocumentFragment();
+  fragment.append(virtualSpacer(start*virtualRowHeight,"top"));
+  for(let index=start;index<end;index++){
+    const item=row(state.virtualItems[index]);
+    fragment.append(item);
+  }
+  fragment.append(virtualSpacer((total-end)*virtualRowHeight,"bottom"));
+  viewport.replaceChildren(fragment);
+}
+
+function virtualSpacer(height,position){
+  const spacer=document.createElement("div");
+  spacer.className="virtual-spacer";
+  spacer.dataset.position=position;
+  spacer.style.height=`${Math.max(0,height)}px`;
+  spacer.setAttribute("aria-hidden","true");
+  return spacer;
 }
 
 function filtered(){
@@ -532,6 +636,7 @@ function toggleFilterDrawer(){
 
 function setFilterDrawer(isOpen){
   elements["filters-drawer"].classList.toggle("hidden",!isOpen);
+  elements["filters-drawer"].setAttribute("aria-hidden",String(!isOpen));
   elements["filter-toggle"].setAttribute("aria-expanded",String(isOpen));
   elements["filter-toggle"].classList.toggle("active",isOpen);
 }
@@ -612,8 +717,10 @@ function updateCapacityStatus(){
   elements["capacity-status"].textContent=`${Math.round(ratio*100)}%`;
   elements["capacity-status"].className=`metric capacity-status${level?` ${level}`:""}`;
   elements["capacity-status"].title=`Storage ${bytes(state.stats.bytes||0)} / ${bytes(state.stats.max_bytes||0)} · ${state.stats.events||0} / ${state.stats.max_events||0} events · ${state.stats.evicted_events||0} evicted · ${state.stats.dropped_events||0} dropped`;
-  const disk=state.stats.storage==="disk";
-  elements["storage-note"].innerHTML=`<strong>${disk?"Disk journal":"In-memory"}</strong><span>${escapeHTML(state.stats.storage_error||(disk?"Events survive process restarts.":"Events disappear when this process stops."))}</span>`;
+  const storage=state.stats.storage||"memory";
+  const persisted=storage==="disk"||storage==="sqlite";
+  const storageLabel=storage==="sqlite"?"SQLite":storage==="disk"?"Disk journal":"In-memory";
+  elements["storage-note"].innerHTML=`<strong>${storageLabel}</strong><span>${escapeHTML(state.stats.storage_error||(persisted?"Events survive process restarts.":"Events disappear when this process stops."))}</span>`;
   elements["storage-note"].classList.toggle("danger",Boolean(state.stats.storage_error));
 }
 
@@ -635,6 +742,9 @@ function matchesEntityFilters(event){
 function render(){
   renderEntityFilters();
   const events=state.screen==="index"?filtered():[];
+  elements["dashboard-screen"].classList.toggle("hidden",state.screen!=="dashboard");
+  elements["index-screen"].classList.toggle("hidden",state.screen!=="index");
+  elements["detail-screen"].classList.toggle("hidden",state.screen!=="detail");
   updateEventCount();
   elements["screen-title"].textContent=kindLabel(state.kind);
   renderListHeading();
@@ -642,12 +752,10 @@ function render(){
   elements["duration-filter"].classList.toggle("hidden",!durationFilterKinds.has(state.kind));
   updateFilterPanel();
   elements.empty.classList.toggle("hidden",events.length>0);
-  elements.events.replaceChildren(...events.map(row));
+  elements.events.classList.toggle("hidden",events.length===0);
+  if(state.screen==="index")renderVirtualList(events);
   renderPagination();
   if(state.selected&&!state.events.has(state.selected))state.selected="";
-  elements["dashboard-screen"].classList.toggle("hidden",state.screen!=="dashboard");
-  elements["index-screen"].classList.toggle("hidden",state.screen!=="index");
-  elements["detail-screen"].classList.toggle("hidden",state.screen!=="detail");
   if(state.screen==="dashboard")renderDashboard();
   if(state.screen==="detail")renderDetail(state.events.get(state.selected));
 }
@@ -672,10 +780,13 @@ function updateFilterPanel(){
 }
 
 function renderPagination(){
-  elements.pagination.classList.toggle("hidden",!state.hasMore&&!state.loadingMore);
+  const loaded=state.events.size;
+  const total=Number(state.stats.events)||0;
+  elements.pagination.classList.toggle("hidden",loaded===0&&!state.hasMore&&!state.loadingMore);
   elements["load-more"].disabled=state.loadingMore;
-  elements["load-more"].textContent=state.loadingMore?"Loading…":"Load older events";
-  elements["pagination-status"].textContent=`${state.events.size} loaded${state.stats.events?` of ${state.stats.events}`:""}`;
+  elements["load-more"].classList.toggle("hidden",!state.hasMore&&!state.loadingMore&&!state.loadMoreError);
+  elements["load-more"].textContent=state.loadingMore?"Loading older…":state.loadMoreError?"Retry":"Load older now";
+  elements["pagination-status"].textContent=state.loadMoreError?state.loadMoreError:state.hasMore?`${loaded} loaded${total?` of ${total}`:""} · scroll for older`:`${loaded} loaded${total?` of ${total}`:""} · complete`;
 }
 
 function filterDefinitions(kind){
@@ -724,7 +835,7 @@ function renderEntityFilters(){
 function renderListHeading(){
   const layout=listLayout(state.kind);
   elements["list-heading"].className=`list-heading${listLayoutClasses(layout)}`;
-  elements["list-heading"].innerHTML=`${layout.badge?`<span>${escapeHTML(layout.badge)}</span>`:""}<span>${escapeHTML(layout.entry)}</span>${layout.status?`<span>${escapeHTML(layout.status)}</span>`:""}${layout.duration?'<span class="list-duration">Duration</span>':""}<span class="list-time">Happened</span><span></span>`;
+  elements["list-heading"].innerHTML=`${layout.badge?`<span>${escapeHTML(layout.badge)}</span>`:""}<span>${escapeHTML(layout.entry)}</span>${layout.status?`<span>${escapeHTML(layout.status)}</span>`:""}${layout.duration?'<span class="list-duration">Duration</span>':""}<span class="list-time">Happened</span><span class="list-action-spacer" aria-hidden="true"></span>`;
 }
 
 function renderDashboard(){
@@ -1471,7 +1582,7 @@ function entityContentCard(event){
 
 function queryPlanPanel(query){
   const plan=query.data?.plan;
-  const panel=plan?.text?codePanel(plan.text,false,"No plan rows were returned."):'<div class="panel-empty">EXPLAIN was not captured. Enable it explicitly in the SQL integration.</div>';
+  const panel=plan?.text?codePanel(plan.text,false,"No plan rows were returned."):'<div class="panel-empty">No EXPLAIN plan is stored for this query. Enable <code>Config{Explain: true}</code> before recording it; existing entries are not backfilled.</div>';
   return`${panel}${plan?.error?`<div class="danger-block">${escapeHTML(plan.error)}</div>`:""}`;
 }
 

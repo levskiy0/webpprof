@@ -55,7 +55,10 @@ func (c *sqlConnProfiler) explain(ctx context.Context, query string, args []driv
 
 func explainableSQL(query string) bool {
 	query = strings.TrimSpace(query)
-	if sqlOperation(query) != "SELECT" {
+	switch sqlOperation(query) {
+	case "SELECT", "INSERT", "UPDATE", "DELETE", "WITH":
+		// Plain EXPLAIN returns the execution plan without running the DML.
+	default:
 		return false
 	}
 	query = strings.TrimSuffix(query, ";")

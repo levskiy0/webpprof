@@ -38,8 +38,10 @@ type entryStore struct {
 	subscribers    map[uint64]chan streamMessage
 	nextSubscriber uint64
 	isClosed       bool
+	storageKind    storageKind
 	storagePath    string
 	storageFile    *os.File
+	storageSQLite  *sqliteEntryStorage
 	storageBytes   int64
 	storageError   string
 	bodyLimit      int64
@@ -66,6 +68,7 @@ func newEntryStore(c config) *entryStore {
 		maxBytes:      c.maxBytes,
 		streamBuffer:  c.streamBuffer,
 		subscribers:   make(map[uint64]chan streamMessage),
+		storageKind:   c.storageKind,
 		storagePath:   c.storagePath,
 		bodyLimit:     c.bodyLimit,
 		requestSample: c.requestSample,
@@ -102,7 +105,7 @@ func (s *entryStore) put(entry Entry) bool {
 	s.order = append(s.order, entry.ID)
 	s.bytes += size
 	s.evictLocked()
-	s.appendJournalLocked(storeJournalRecord{Operation: "put", Entry: &entry})
+	s.persistLocked(storeJournalRecord{Operation: "put", Entry: &entry})
 	copy := cloneEntry(entry)
 	s.broadcastLocked(streamMessage{Type: messageType, Cursor: entry.Cursor, Event: &copy})
 	return true
@@ -196,8 +199,10 @@ func (s *entryStore) clear() {
 	s.order = s.order[:0]
 	s.bytes = 0
 	s.nextCursor++
-	s.appendJournalLocked(storeJournalRecord{Operation: "clear"})
-	s.compactJournalLocked()
+	s.persistLocked(storeJournalRecord{Operation: "clear"})
+	if s.storageKind == storageKindJournal {
+		s.compactJournalLocked()
+	}
 	s.broadcastLocked(streamMessage{Type: "events.cleared", Cursor: s.nextCursor})
 }
 
@@ -205,10 +210,7 @@ func (s *entryStore) stats() Stats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.purgeExpiredLocked(time.Now())
-	storage := "memory"
-	if s.storagePath != "" {
-		storage = "disk"
-	}
+	storage := string(s.storageKind)
 	return Stats{Events: len(s.entries), Bytes: s.bytes, DroppedEvents: s.dropped, EvictedEvents: s.evicted, Subscribers: len(s.subscribers), Cursor: s.nextCursor, MaxEvents: s.maxEvents, MaxBytes: s.maxBytes, RetentionNS: int64(s.retention), Storage: storage, StorageError: s.storageError, BodyLimit: s.bodyLimit, SampleRate: s.requestSample, DisabledKinds: slices.Clone(s.disabledKinds)}
 }
 
@@ -253,6 +255,12 @@ func (s *entryStore) close() {
 		}
 		s.storageFile = nil
 	}
+	if s.storageSQLite != nil {
+		if err := s.storageSQLite.close(); err != nil && s.storageError == "" {
+			s.storageError = err.Error()
+		}
+		s.storageSQLite = nil
+	}
 	for id, subscriber := range s.subscribers {
 		delete(s.subscribers, id)
 		close(subscriber)
@@ -283,9 +291,17 @@ func (s *entryStore) evictLocked() {
 }
 
 func (s *entryStore) openStorage() {
-	if s.storagePath == "" {
+	if s.storagePath == "" || s.storageKind == storageKindMemory {
 		return
 	}
+	if s.storageKind == storageKindSQLite {
+		s.openSQLiteStorage()
+		return
+	}
+	s.openJournalStorage()
+}
+
+func (s *entryStore) openJournalStorage() {
 	if err := os.MkdirAll(filepath.Dir(s.storagePath), 0o700); err != nil {
 		s.storageError = err.Error()
 		return
@@ -335,6 +351,10 @@ func (s *entryStore) replayRecord(record storeJournalRecord) {
 		s.bytes = 0
 		return
 	}
+	if record.Operation == "delete" && record.Entry != nil {
+		s.removeMemoryLocked(record.Entry.ID)
+		return
+	}
 	if record.Operation != "put" || record.Entry == nil || record.Entry.ID == "" {
 		return
 	}
@@ -348,6 +368,33 @@ func (s *entryStore) replayRecord(record storeJournalRecord) {
 	s.bytes += entrySize(entry)
 	if entry.Cursor > s.nextCursor {
 		s.nextCursor = entry.Cursor
+	}
+}
+
+func (s *entryStore) persistLocked(record storeJournalRecord) {
+	switch s.storageKind {
+	case storageKindJournal:
+		s.appendJournalLocked(record)
+	case storageKindSQLite:
+		if s.storageSQLite == nil {
+			return
+		}
+		var err error
+		switch record.Operation {
+		case "put":
+			if record.Entry != nil {
+				err = s.storageSQLite.put(*record.Entry, s.nextCursor)
+			}
+		case "delete":
+			if record.Entry != nil {
+				err = s.storageSQLite.delete(record.Entry.ID)
+			}
+		case "clear":
+			err = s.storageSQLite.clear(s.nextCursor)
+		}
+		if err != nil {
+			s.storageError = err.Error()
+		}
 	}
 }
 
@@ -421,6 +468,14 @@ func (s *entryStore) compactJournalLocked() {
 }
 
 func (s *entryStore) removeLocked(id string) {
+	if _, ok := s.entries[id]; !ok {
+		return
+	}
+	s.removeMemoryLocked(id)
+	s.persistLocked(storeJournalRecord{Operation: "delete", Entry: &Entry{ID: id}})
+}
+
+func (s *entryStore) removeMemoryLocked(id string) {
 	entry, ok := s.entries[id]
 	if !ok {
 		return
@@ -451,7 +506,11 @@ func (s *entryStore) broadcastLocked(message streamMessage) {
 }
 
 func entrySize(entry Entry) int64 {
-	return int64(len(entry.ID)+len(entry.RequestID)+len(entry.ParentID)+len(entry.OriginRequestID)+len(entry.Process)+len(entry.Instance)+len(entry.Kind)+len(entry.Data)) + 160
+	size := int64(len(entry.ID)+len(entry.RequestID)+len(entry.ParentID)+len(entry.OriginRequestID)+len(entry.Process)+len(entry.Instance)+len(entry.Kind)+len(entry.Data)) + 160
+	for key, value := range entry.Tags {
+		size += int64(len(key) + len(value) + 32)
+	}
+	return size
 }
 
 func cloneEntry(entry Entry) Entry {

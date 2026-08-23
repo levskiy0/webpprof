@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>webpprof realistic example</title>
+  <style>
+    :root { color-scheme: light; --ink: #252936; --muted: #68707d; --line: #dde0e6; --accent: #5558cf; --paper: #ffffff; --canvas: #f5f6f8; }
+    * { box-sizing: border-box; }
+    body { max-width: 920px; margin: 64px auto; padding: 0 24px; color: var(--ink); background: var(--canvas); font: 16px/1.6 system-ui, sans-serif; }
+    main { padding: 32px; border: 1px solid #dde0e6; border-radius: 12px; background: white; box-shadow: 0 14px 40px #1f29370f; }
+    h1 { margin: 0 0 8px; line-height: 1.2; }
+    h2 { margin: 28px 0 4px; font-size: 18px; }
+    p { color: var(--muted); }
+    nav { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+    a, button { padding: 9px 14px; border: 1px solid #d7d9e1; border-radius: 7px; color: #5154c9; background: white; font: inherit; text-decoration: none; cursor: pointer; }
+    a:hover, button:hover { border-color: #777ae0; background: #f0f1ff; }
+    button.primary { border-color: var(--accent); color: white; background: var(--accent); }
+    button:disabled { cursor: wait; opacity: .58; }
+    p code { padding: 2px 5px; border-radius: 4px; background: #eff0f3; }
+    .response-panel { margin-top: 32px; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: #10131a; }
+    .response-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 48px; padding: 10px 14px; border-bottom: 1px solid #ffffff17; color: #aeb6c5; font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .response-head strong { color: #f5f7fb; font-size: 13px; font-weight: 500; }
+    .response-status { flex: none; padding: 3px 8px; border: 1px solid #ffffff24; border-radius: 999px; color: #cbd2df; }
+    .response-status.ok { border-color: #39b98266; color: #63d69d; }
+    .response-status.error { border-color: #e26b7666; color: #ff8993; }
+    pre { min-height: 180px; max-height: 440px; margin: 0; overflow: auto; padding: 18px; color: #dce2ed; font: 13px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; tab-size: 2; white-space: pre-wrap; word-break: break-word; }
+    pre code { font: inherit; }
+    @media (max-width: 640px) { body { margin-block: 24px; } main { padding: 22px; } button, a { width: 100%; text-align: left; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>webpprof realistic example</h1>
+    <p>This is an ordinary <code>net/http</code> application backed by <code>database/sql</code>, pure-Go SQLite, and <code>log/slog</code>. Their three boundaries are wrapped once in <code>main.go</code>; handlers use the optional <code>Measure</code> helper for named service spans.</p>
+    <h2>Automatic after integration</h2>
+    <p>Use these real application routes. Request, middleware, SQL, EXPLAIN, callsite, tags, and slog entities are captured automatically and nested under the measured handler Event.</p>
+    <nav>
+      <button class="primary" type="button" data-request="/api/players/42?tenant=acme" data-method="GET">Load Ada</button>
+      <button type="button" data-request="/api/players?tenant=umbrella" data-method="GET">List players</button>
+      <button type="button" data-request="/api/players/42/views?tenant=acme" data-method="POST">Increment views</button>
+      <button type="button" data-request="/api/failure?tenant=acme" data-method="GET">Real SQL failure</button>
+      <button type="button" data-request="/panic?tenant=umbrella" data-method="GET">Panic</button>
+      <a href="/debug/webpprof/" target="_blank" rel="noreferrer">Open webpprof ↗</a>
+    </nav>
+    <h2>Explicit manual examples</h2>
+    <p>These isolated routes additionally demonstrate a custom integration and synthetic findings. They are not required for normal profiling.</p>
+    <nav>
+      <button type="button" data-request="/api/manual/custom-profiler?tenant=acme" data-method="GET">Custom profiler Event</button>
+      <button type="button" data-request="/api/manual/diagnostics?tenant=umbrella" data-method="GET">Synthetic findings</button>
+    </nav>
+    <section class="response-panel" aria-labelledby="response-title">
+      <div class="response-head">
+        <strong id="response-title">response</strong>
+        <span id="response-status" class="response-status">waiting</span>
+      </div>
+      <pre><code id="response" aria-live="polite">Click an action above. Its HTTP response will appear here.</code></pre>
+    </section>
+    <p>SQLite application data and profiler events survive restarts under <code>./var/webpprof/</code>. Stop the server with <code>Ctrl+C</code>.</p>
+  </main>
+  <script>
+    const output = document.getElementById('response');
+    const status = document.getElementById('response-status');
+
+    document.addEventListener('click', async function (event) {
+      const button = event.target.closest('[data-request]');
+      if (!button) return;
+
+      const method = button.dataset.method || 'GET';
+      const target = button.dataset.request;
+      button.disabled = true;
+      status.className = 'response-status';
+      status.textContent = 'loading';
+      output.textContent = method + ' ' + target + '\n\nWaiting for response…';
+
+      try {
+        const response = await fetch(target, {
+          method: method,
+          headers: { 'Accept': 'application/json' },
+        });
+        const body = await response.text();
+        let rendered = body || '(empty response body)';
+        try {
+          rendered = JSON.stringify(JSON.parse(body), null, 2);
+        } catch (_) {}
+
+        status.className = 'response-status ' + (response.ok ? 'ok' : 'error');
+        status.textContent = String(response.status) + ' ' + response.statusText;
+        output.textContent = method + ' ' + target + '\n\n' + rendered;
+      } catch (error) {
+        status.className = 'response-status error';
+        status.textContent = 'network error';
+        output.textContent = method + ' ' + target + '\n\n' + String(error);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

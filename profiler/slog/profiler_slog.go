@@ -96,7 +96,11 @@ func addSlogAttr(fields map[string]any, groups []string, attr stdlibslog.Attr) {
 		target[attr.Key] = nested
 		return
 	}
-	target[attr.Key] = attr.Value.Any()
+	value := attr.Value.Any()
+	if err, ok := value.(error); ok {
+		value = err.Error()
+	}
+	target[attr.Key] = value
 }
 
 var _ webpprof.Integration[stdlibslog.Handler] = ProfilerSlog{}

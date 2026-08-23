@@ -39,6 +39,14 @@ type requestPattern struct {
 	path   string
 }
 
+type storageKind string
+
+const (
+	storageKindMemory  storageKind = "memory"
+	storageKindJournal storageKind = "disk"
+	storageKindSQLite  storageKind = "sqlite"
+)
+
 type config struct {
 	basePath         string
 	token            string
@@ -55,6 +63,7 @@ type config struct {
 	requestFilters   []RequestFilter
 	retentionFilters []RequestRetentionFilter
 	excluded         []requestPattern
+	storageKind      storageKind
 	storagePath      string
 	requestSample    float64
 	requestLimit     int64
@@ -67,7 +76,28 @@ type config struct {
 // journal is replayed when the profiler starts and compacted automatically.
 // Leave path empty to keep the default in-memory-only behavior.
 func WithStoragePath(storagePath string) Option {
-	return func(c *config) { c.storagePath = strings.TrimSpace(storagePath) }
+	return func(c *config) {
+		c.storagePath = strings.TrimSpace(storagePath)
+		c.storageKind = storageKindMemory
+		if c.storagePath != "" {
+			c.storageKind = storageKindJournal
+		}
+	}
+}
+
+// WithSQLiteStorage persists captured entries in a SQLite database. The
+// database is replayed when the profiler starts and is pruned with the same
+// retention, event-count, and byte limits as the in-memory store. Leave path
+// empty to keep the default in-memory-only behavior. When multiple storage
+// options are supplied, the last one wins.
+func WithSQLiteStorage(storagePath string) Option {
+	return func(c *config) {
+		c.storagePath = strings.TrimSpace(storagePath)
+		c.storageKind = storageKindMemory
+		if c.storagePath != "" {
+			c.storageKind = storageKindSQLite
+		}
+	}
 }
 
 func defaultConfig() config {
@@ -81,6 +111,7 @@ func defaultConfig() config {
 		queueTimeout:     defaultQueueTimeout,
 		dashboardTimeout: defaultDashboardTimeout,
 		dashboard:        defaultDashboardConfig(),
+		storageKind:      storageKindMemory,
 		allowedOrigins:   make(map[string]struct{}),
 		requestSample:    1,
 		requestLimit:     -1,

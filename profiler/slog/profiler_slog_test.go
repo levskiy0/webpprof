@@ -3,6 +3,7 @@ package slog
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	stdlibslog "log/slog"
 	"net/http"
@@ -22,7 +23,7 @@ func TestProfilerSlogRecordsFieldsAndPreservesHandler(t *testing.T) {
 		t.Fatal("handler was wrapped twice")
 	}
 	logger := stdlibslog.New(profiled).With("component", "worker")
-	logger.WarnContext(context.Background(), "retrying", "attempt", 2)
+	logger.WarnContext(context.Background(), "retrying", "attempt", 2, "error", errors.New("temporary failure"))
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/debug/webpprof/api/events?kind=log&limit=10", nil))
 	var payload struct {
@@ -40,6 +41,9 @@ func TestProfilerSlogRecordsFieldsAndPreservesHandler(t *testing.T) {
 	}
 	if event.Level != "WARN" || event.Message != "retrying" || event.Fields["component"] != "worker" || event.Fields["attempt"] != float64(2) {
 		t.Fatalf("event = %+v", event)
+	}
+	if event.Fields["error"] != "temporary failure" {
+		t.Fatalf("error field = %#v", event.Fields["error"])
 	}
 }
 

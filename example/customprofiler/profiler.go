@@ -4,7 +4,6 @@ package customprofiler
 
 import (
 	"context"
-	"time"
 
 	"github.com/levskiy0/webpprof"
 )
@@ -63,8 +62,15 @@ func ProfileWith(profiler *webpprof.Profiler, client Client) Client {
 }
 
 func (c *profiledClient) Lookup(ctx context.Context, key string) (string, error) {
-	startedAt := time.Now().UTC()
-	value, err := c.inner.Lookup(ctx, key)
+	span := c.profiler.StartEvent(ctx, webpprof.Event{
+		Kind:    "custom-client",
+		Name:    "lookup",
+		Summary: "Lookup " + key,
+		Fields: map[string]any{
+			"key": key,
+		},
+	})
+	value, err := c.inner.Lookup(span.Context(), key)
 
 	status := "found"
 	if value == "" {
@@ -74,26 +80,14 @@ func (c *profiledClient) Lookup(ctx context.Context, key string) (string, error)
 		status = "failed"
 	}
 
-	event := webpprof.Event{
-		Meta: webpprof.Meta{
-			StartedAt: startedAt,
-			Duration:  time.Since(startedAt),
-		},
-		Kind:    "custom-client",
-		Name:    "lookup",
-		Status:  status,
-		Summary: "Lookup " + key,
+	measurement := span.FinishResult(webpprof.EventResult{
+		Status: status,
 		Fields: map[string]any{
-			"key":   key,
 			"found": value != "",
 		},
-	}
-	if err != nil {
-		event.Error = err.Error()
-	}
-
-	c.profiler.LogEventContext(ctx, event)
-	return value, err
+		Err: err,
+	})
+	return value, measurement.Err
 }
 
 var _ webpprof.Integration[Client] = Profiler{}

@@ -307,6 +307,118 @@ func TestStorageJournalSurvivesRestart(t *testing.T) {
 	}
 }
 
+func TestSQLiteStorageSurvivesRestartAndPreservesCursor(t *testing.T) {
+	storagePath := filepath.Join(t.TempDir(), "webpprof.db")
+	first := New(http.NewServeMux(), WithSQLiteStorage(storagePath))
+	first.LogQuery(Query{Meta: Meta{ID: "persistent-query", Tags: map[string]string{"tenant": "acme"}}, SQL: "SELECT 1"})
+	firstCursor := first.store.stats().Cursor
+	first.store.clear()
+	clearedCursor := first.store.stats().Cursor
+	first.LogEvent(Event{Meta: Meta{ID: "persistent-event"}, Kind: "test", Name: "created-after-clear"})
+	lastCursor := first.store.stats().Cursor
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first profiler: %v", err)
+	}
+
+	second := New(http.NewServeMux(), WithSQLiteStorage(storagePath))
+	t.Cleanup(func() { _ = second.Close() })
+	if _, ok := second.store.get("persistent-query"); ok {
+		t.Fatal("entry removed by clear was restored from SQLite")
+	}
+	entry, ok := second.store.get("persistent-event")
+	if !ok || entry.Tags["tenant"] != "" || !strings.Contains(string(entry.Data), "created-after-clear") {
+		t.Fatalf("restored entry = %+v, found = %v", entry, ok)
+	}
+	stats := second.store.stats()
+	if stats.Storage != "sqlite" || stats.Events != 1 || stats.StorageError != "" || stats.Cursor != lastCursor {
+		t.Fatalf("sqlite storage stats = %+v", stats)
+	}
+	if !(firstCursor < clearedCursor && clearedCursor < lastCursor) {
+		t.Fatalf("sqlite cursors did not advance across clear: first=%d clear=%d last=%d", firstCursor, clearedCursor, lastCursor)
+	}
+	info, err := os.Stat(storagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("sqlite permissions = %o, want owner-only", info.Mode().Perm())
+	}
+}
+
+func TestSQLiteStoragePersistsFIFOEviction(t *testing.T) {
+	storagePath := filepath.Join(t.TempDir(), "webpprof.db")
+	first := New(http.NewServeMux(), WithSQLiteStorage(storagePath), WithMaxEvents(2))
+	for index := 1; index <= 3; index++ {
+		first.LogEvent(Event{Meta: Meta{ID: fmt.Sprintf("event-%d", index)}, Kind: "fifo", Name: "recorded"})
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first profiler: %v", err)
+	}
+
+	second := New(http.NewServeMux(), WithSQLiteStorage(storagePath), WithMaxEvents(2))
+	t.Cleanup(func() { _ = second.Close() })
+	if _, ok := second.store.get("event-1"); ok {
+		t.Fatal("oldest SQLite entry survived FIFO eviction")
+	}
+	for _, id := range []string{"event-2", "event-3"} {
+		if _, ok := second.store.get(id); !ok {
+			t.Fatalf("retained SQLite entry %q was not restored", id)
+		}
+	}
+	if stats := second.store.stats(); stats.Events != 2 || stats.StorageError != "" {
+		t.Fatalf("sqlite FIFO stats = %+v", stats)
+	}
+}
+
+func TestSQLiteStoragePersistsRetentionPruning(t *testing.T) {
+	storagePath := filepath.Join(t.TempDir(), "webpprof.db")
+	first := newProfiler(WithSQLiteStorage(storagePath), WithRetention(24*time.Hour))
+	first.store.put(Entry{ID: "expired", Kind: KindEvent, RecordedAt: time.Now().Add(-2 * time.Hour), Data: json.RawMessage(`{"kind":"test"}`)})
+	first.store.put(Entry{ID: "fresh", Kind: KindEvent, RecordedAt: time.Now(), Data: json.RawMessage(`{"kind":"test"}`)})
+	first.store.close()
+
+	second := newProfiler(WithSQLiteStorage(storagePath), WithRetention(time.Hour))
+	if _, ok := second.store.get("expired"); ok {
+		t.Fatal("expired SQLite entry was restored")
+	}
+	if _, ok := second.store.get("fresh"); !ok {
+		t.Fatal("fresh SQLite entry was not restored")
+	}
+	second.store.close()
+
+	third := newProfiler(WithSQLiteStorage(storagePath), WithRetention(24*time.Hour))
+	t.Cleanup(third.store.close)
+	if _, ok := third.store.get("expired"); ok {
+		t.Fatal("retention-pruned SQLite entry reappeared after another restart")
+	}
+}
+
+func TestStoreCountsTagsTowardMaxBytes(t *testing.T) {
+	configuration := defaultConfig()
+	configuration.maxBytes = 512
+	store := newEntryStore(configuration)
+	t.Cleanup(store.close)
+	if store.put(Entry{ID: "oversized-tags", Kind: KindEvent, RecordedAt: time.Now(), Tags: map[string]string{"tenant": strings.Repeat("x", 1024)}, Data: json.RawMessage(`{}`)}) {
+		t.Fatal("entry with tags larger than max bytes was accepted")
+	}
+	if stats := store.stats(); stats.Events != 0 || stats.DroppedEvents != 1 {
+		t.Fatalf("oversized tag stats = %+v", stats)
+	}
+}
+
+func TestStorageOptionLastWins(t *testing.T) {
+	configuration := defaultConfig()
+	WithStoragePath("events.jsonl")(&configuration)
+	WithSQLiteStorage("events.db")(&configuration)
+	if configuration.storageKind != storageKindSQLite || configuration.storagePath != "events.db" {
+		t.Fatalf("sqlite storage config = kind %q path %q", configuration.storageKind, configuration.storagePath)
+	}
+	WithStoragePath("")(&configuration)
+	if configuration.storageKind != storageKindMemory || configuration.storagePath != "" {
+		t.Fatalf("memory storage config = kind %q path %q", configuration.storageKind, configuration.storagePath)
+	}
+}
+
 func TestEventsEndpointPaginatesOlderEntries(t *testing.T) {
 	mux := http.NewServeMux()
 	profiler := New(mux)

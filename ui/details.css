@@ -534,6 +534,27 @@
   opacity: .6;
 }
 
+.events {
+  height: calc(100vh - 316px);
+  min-height: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  contain: layout paint style;
+  background: var(--surface);
+}
+
+.events:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.virtual-spacer {
+  width: 1px;
+  min-height: 0;
+  pointer-events: none;
+}
+
 .capacity-status.warning {
   border-color: #e9c46a;
   background: var(--amber-soft);
@@ -798,12 +819,33 @@ pre code {
 
 .list-heading,
 .event-row {
-  grid-template-columns: 92px minmax(0, 1fr) 132px 100px 100px 24px;
+  --list-action-width: 24px;
+  grid-template-columns: 92px minmax(0, 1fr) 132px 100px 100px var(--list-action-width);
   column-gap: 12px;
 }
 
+.list-action-spacer,
+.event-row > .relation-action {
+  width: var(--list-action-width);
+  height: var(--list-action-width);
+  justify-self: end;
+}
+
 .card-toolbar {
-  flex-wrap: wrap;
+  position: relative;
+  z-index: 3;
+  flex-wrap: nowrap;
+  border-radius: 7px 7px 0 0;
+}
+
+.list-panel.telescope-list-card {
+  overflow: visible;
+}
+
+.list-content {
+  overflow: hidden;
+  border-radius: 0 0 7px 7px;
+  background: var(--surface);
 }
 
 .entity-filters {
@@ -874,12 +916,20 @@ pre code {
 }
 
 .filters-drawer {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 8px);
+  right: 18px;
   display: grid;
-  flex: 0 0 100%;
   gap: 13px;
-  width: 100%;
-  padding: 15px 0 3px;
-  border-top: 1px solid #e9ebef;
+  width: min(680px, calc(100% - 36px));
+  max-height: calc(100vh - 160px);
+  overflow-y: auto;
+  padding: 16px;
+  border: 1px solid #dfe2e8;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 18px 48px #11182724, 0 3px 10px #11182714;
 }
 
 .filters-drawer > header {
@@ -951,17 +1001,17 @@ pre code {
 
 .list-heading.without-badge,
 .event-row.without-badge {
-  grid-template-columns: minmax(0, 1fr) 132px 100px 100px 24px;
+  grid-template-columns: minmax(0, 1fr) 132px 100px 100px var(--list-action-width);
 }
 
 .list-heading.without-status.without-duration,
 .event-row.without-status.without-duration {
-  grid-template-columns: 92px minmax(0, 1fr) 100px 24px;
+  grid-template-columns: 92px minmax(0, 1fr) 100px var(--list-action-width);
 }
 
 .list-heading.without-status.without-duration.wide-badge,
 .event-row.without-status.without-duration.wide-badge {
-  grid-template-columns: 170px minmax(0, 1fr) 100px 24px;
+  grid-template-columns: 170px minmax(0, 1fr) 100px var(--list-action-width);
 }
 
 .list-heading {
@@ -971,6 +1021,7 @@ pre code {
 }
 
 .event-row {
+  height: 70px;
   min-height: 70px;
   padding-block: 10px;
   font-size: 16px;
@@ -1583,6 +1634,11 @@ pre code {
 .diagnostic-healthy small { color: #858c97; font-size: 12px; }
 
 @media (max-width: 720px) {
+	.events {
+		height: calc(100vh - 390px);
+		min-height: 280px;
+	}
+
   .entity-filters {
     display: contents;
   }
@@ -1603,7 +1659,9 @@ pre code {
   }
 
   .filters-drawer {
-    flex-basis: auto;
+    right: 12px;
+    width: calc(100% - 24px);
+    max-height: calc(100vh - 120px);
   }
 
   .filters-drawer > header > div {
@@ -1617,23 +1675,23 @@ pre code {
 
   .list-heading,
   .event-row {
-    grid-template-columns: 76px minmax(0, 1fr) 112px 22px;
+    grid-template-columns: 76px minmax(0, 1fr) 112px var(--list-action-width);
     column-gap: 8px;
   }
 
   .list-heading.without-badge,
   .event-row.without-badge {
-    grid-template-columns: minmax(0, 1fr) 112px 22px;
+    grid-template-columns: minmax(0, 1fr) 112px var(--list-action-width);
   }
 
   .list-heading.without-status.without-duration,
   .event-row.without-status.without-duration {
-    grid-template-columns: 76px minmax(0, 1fr) 22px;
+    grid-template-columns: 76px minmax(0, 1fr) var(--list-action-width);
   }
 
   .list-heading.without-status.without-duration.wide-badge,
   .event-row.without-status.without-duration.wide-badge {
-    grid-template-columns: 112px minmax(0, 1fr) 22px;
+    grid-template-columns: 112px minmax(0, 1fr) var(--list-action-width);
   }
 
   .event-title {

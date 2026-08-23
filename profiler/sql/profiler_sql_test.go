@@ -166,6 +166,49 @@ func TestProfilerSQLExplainCapturesPlanWithoutExecutingItAsTheQuery(t *testing.T
 	}
 }
 
+func TestProfilerSQLExplainCapturesUpdatePlan(t *testing.T) {
+	mux := http.NewServeMux()
+	profiler := webpprof.New(mux)
+	t.Cleanup(func() { _ = profiler.Close() })
+	profiled := ProfileConnectorWith(
+		profiler,
+		connectorStub{},
+		Config{Connection: "primary", Driver: "sqlite", Database: "app", Explain: true},
+	)
+	db := stdlibsql.OpenDB(profiled)
+	t.Cleanup(func() { _ = db.Close() })
+
+	result, err := db.ExecContext(context.Background(), "UPDATE players SET active = 1 WHERE id = ?", 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if affected, err := result.RowsAffected(); err != nil || affected != 3 {
+		t.Fatalf("rows affected = %d, error = %v", affected, err)
+	}
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/debug/webpprof/api/events?kind=query&limit=10", nil))
+	var payload struct {
+		Events []webpprof.Entry `json:"events"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Events) != 1 {
+		t.Fatalf("events = %+v", payload.Events)
+	}
+	var query webpprof.Query
+	if err := json.Unmarshal(payload.Events[0].Data, &query); err != nil {
+		t.Fatal(err)
+	}
+	if query.Plan == nil || query.Plan.Error != "" || !strings.Contains(query.Plan.Text, "SEARCH players") {
+		t.Fatalf("plan = %+v", query.Plan)
+	}
+	if !strings.HasPrefix(query.Plan.Command, "EXPLAIN QUERY PLAN UPDATE") || query.Operation != "UPDATE" {
+		t.Fatalf("query = %+v", query)
+	}
+}
+
 func TestExplainableSQLRejectsMultipleStatements(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -175,8 +218,11 @@ func TestExplainableSQLRejectsMultipleStatements(t *testing.T) {
 		{name: "select", query: "SELECT 1", want: true},
 		{name: "trailing semicolon", query: "SELECT 1;", want: true},
 		{name: "multiple statements", query: "SELECT 1; DELETE FROM players", want: false},
-		{name: "write", query: "UPDATE players SET active = 1", want: false},
-		{name: "cte", query: "WITH players AS (SELECT 1) SELECT * FROM players", want: false},
+		{name: "insert", query: "INSERT INTO players(id) VALUES (1)", want: true},
+		{name: "update", query: "UPDATE players SET active = 1", want: true},
+		{name: "delete", query: "DELETE FROM players WHERE id = 1", want: true},
+		{name: "cte", query: "WITH players AS (SELECT 1) SELECT * FROM players", want: true},
+		{name: "ddl", query: "DROP TABLE players", want: false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

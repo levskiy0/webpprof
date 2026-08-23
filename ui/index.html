@@ -63,7 +63,7 @@
               <h2 id="screen-title">Requests</h2>
               <div class="search-wrap"><span aria-hidden="true"></span><input id="search" type="search" aria-label="Search profiler events" placeholder="Search entries…"></div>
               <button id="filter-toggle" class="filter-toggle" type="button" aria-expanded="false" aria-controls="filters-drawer"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M5.5 10h9M8 15h4"></path></svg><span>Filters</span><b id="filter-count" class="hidden">0</b></button>
-              <section id="filters-drawer" class="filters-drawer hidden" aria-label="Event filters">
+              <section id="filters-drawer" class="filters-drawer hidden" aria-label="Event filters" aria-hidden="true">
                 <header><div><strong>Filter events</strong><span id="filter-summary">All recorded events</span></div><button id="filter-clear" type="button" disabled>Reset</button></header>
                 <div class="filter-controls">
                   <div id="entity-filters" class="entity-filters" aria-label="Entity filters"></div>
@@ -73,10 +73,12 @@
                 </div>
               </section>
             </div>
-            <div id="list-heading" class="list-heading"><span>Method</span><span>Path</span><span>Status</span><span class="list-duration">Duration</span><span class="list-time">Happened</span><span></span></div>
-            <div id="events" class="events"></div>
-            <div id="empty" class="empty">Waiting for matching events…</div>
-            <div id="pagination" class="pagination hidden"><button id="load-more" type="button">Load older events</button><span id="pagination-status"></span></div>
+            <div class="list-content">
+              <div id="list-heading" class="list-heading"><span>Method</span><span>Path</span><span>Status</span><span class="list-duration">Duration</span><span class="list-time">Happened</span><span class="list-action-spacer" aria-hidden="true"></span></div>
+              <div id="events" class="events" aria-label="Profiler events" tabindex="0"></div>
+              <div id="empty" class="empty">Waiting for matching events…</div>
+              <div id="pagination" class="pagination hidden"><button id="load-more" type="button">Load older events</button><span id="pagination-status"></span></div>
+            </div>
           </section>
         </section>
         <section id="detail-screen" class="detail-screen hidden">
