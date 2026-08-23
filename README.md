@@ -56,6 +56,9 @@ local debugging into an infrastructure project.
 - **Live debug dashboard:** WebSocket updates, full-text search, entity filters,
   duration filters, tag watching, runtime health, queue health, and slowest
   operations.
+- **AI-assisted debugging:** a separate read-only MCP server lets Codex, Claude,
+  Cursor, and other MCP clients inspect captured requests and automatic
+  performance findings without embedding an agent protocol in the application.
 - **Framework-friendly integration:** standard `net/http`, Gin, Bun, go-redis,
   `slog`, Zap, OpenTelemetry, and other focused profiler packages.
 - **Zero work when disabled:** do not initialize the profiler in environments
@@ -67,6 +70,40 @@ local debugging into an infrastructure project.
 ```sh
 go get github.com/levskiy0/webpprof
 ```
+
+This installs the core, UI, and dependency-neutral/standard-library profilers.
+Third-party integrations are separate nested Go modules, so their SDKs are not
+added to the application's module graph until that integration is installed:
+
+```sh
+# The core does not require pgx, GORM, Gin, Asynq, or the other optional SDKs.
+go get github.com/levskiy0/webpprof
+
+# pgx is added only when this module is requested.
+go get github.com/levskiy0/webpprof/profiler/pgx
+
+# GORM is independent from pgx and every other adapter.
+go get github.com/levskiy0/webpprof/profiler/gorm
+```
+
+The repository uses a `go.work` file only for local development. Consumers do
+not need it: each directory containing its own `go.mod` is published and
+resolved as an independent module.
+
+The optional MCP server is a separate executable and Go module. Installing the
+webpprof library does not install this binary. Install it from any directory by
+using its full module path:
+
+```sh
+go install github.com/levskiy0/webpprof/cmd/webpprof-mcp@v0.2.0
+webpprof-mcp --version
+```
+
+`go install` writes the executable to `GOBIN`, or to `GOPATH/bin` when `GOBIN`
+is unset. Make sure that directory is in `PATH`. Use `@latest` instead of the
+version when you intentionally want the newest release. The relative command
+`go install ./cmd/webpprof-mcp` is only for contributors running it from a
+checkout of this repository.
 
 ## Quick start
 
@@ -120,6 +157,93 @@ the complete original request.
 When profiling is disabled, do not call `Start`, `New`, or any profiler wrapper. Package-level `Log*` functions are safe no-ops without an active profiler.
 
 Use `webpprof.New(router, options...)` when the application owns the HTTP server. `Start` creates a private listener.
+
+## Debug Go applications with AI agents over MCP
+
+`webpprof-mcp` is a separate process. It does not attach to the Go process or
+read its memory. The application runs webpprof normally, while the MCP binary
+authenticates against the profiler's private HTTP API and exposes bounded,
+read-only tools over stdio:
+
+```text
+Codex / Claude / Cursor <-- MCP over stdio --> webpprof-mcp <-- HTTP --> running Go application
+```
+
+Install the standalone MCP binary (the webpprof library alone does not install
+it):
+
+```sh
+go install github.com/levskiy0/webpprof/cmd/webpprof-mcp@v0.2.0
+webpprof-mcp --version
+```
+
+This works outside the repository because `cmd/webpprof-mcp` is published as
+its own Go module. Releases use the matching module tag
+`cmd/webpprof-mcp/v0.2.0`; use `@latest` to follow the newest published tag.
+
+Start the application profiler on loopback with a token shared through the
+environment:
+
+```go
+profiler, err := webpprof.Start(
+    "127.0.0.1:6061",
+    webpprof.WithToken(os.Getenv("WEBPPROF_TOKEN")),
+)
+if err != nil {
+    return err
+}
+defer profiler.Shutdown(context.Background())
+```
+
+Then register the stdio server in Codex:
+
+```sh
+codex mcp add webpprof \
+  --env WEBPPROF_TOKEN="$WEBPPROF_TOKEN" \
+  -- webpprof-mcp --url http://127.0.0.1:6061/debug/webpprof/
+```
+
+The equivalent generic MCP configuration used by clients such as Claude and
+Cursor is:
+
+```json
+{
+  "mcpServers": {
+    "webpprof": {
+      "command": "webpprof-mcp",
+      "args": [
+        "--url",
+        "http://127.0.0.1:6061/debug/webpprof/"
+      ],
+      "env": {
+        "WEBPPROF_TOKEN": "development-token"
+      }
+    }
+  }
+}
+```
+
+The binary also accepts the URL through `WEBPPROF_URL`. The token intentionally
+has no CLI flag, which keeps it out of the process argument list. Loopback is
+required by default. A remote profiler requires `--allow-remote` and an HTTPS
+URL; keep `WithToken` enabled and use `WithSecureCookie(true)` behind TLS.
+
+### MCP tools
+
+| Tool | Purpose |
+| --- | --- |
+| `webpprof_status` | Check connectivity, capture capacity, retention, storage, sampling, and the latest cursor. |
+| `webpprof_list_requests` | List recent requests and filter by method, path, status, duration, tags, or cursor. |
+| `webpprof_inspect_request` | Return automatic findings and the correlated request timeline. |
+| `webpprof_search_events` | Search SQL, cache, logs, HTTP calls, exceptions, and other captured events. |
+| `webpprof_wait_for_request` | Wait for the next matching request after an observed cursor. |
+
+A typical agent workflow is: call `webpprof_status`, remember its cursor,
+reproduce the problem, call `webpprof_wait_for_request` with that cursor, and
+pass the returned request ID to `webpprof_inspect_request`. Captured bodies,
+values, arguments, and stacks remain omitted unless `include_payloads` is
+explicitly enabled. The tools never replay requests, clear events, or mutate
+the application.
 
 ## Try the Go profiler locally
 
@@ -475,13 +599,19 @@ request timeline. The rules live in `analysis.go`; the browser only renders the
 returned `Finding` values. Current findings detect:
 
 - query fingerprints repeated at least three times (possible N+1);
-- SQL consuming at least 50% of the effective request duration;
-- three or more successful, non-overlapping calls to one HTTP host;
-- a cache miss immediately followed by at least three identical queries;
+- SQL covering at least 50% of the effective request wall-clock duration
+  (overlapping queries are counted once);
+- three or more successful, non-overlapping `GET`, `HEAD`, or `OPTIONS` calls
+  to one HTTP host;
+- a cache read miss followed within 100 ms by at least three identical queries;
 - named middleware with an inclusive duration of at least 100 ms.
 
 The analyzer also preserves direct slow request/query/HTTP, failed job/mail/HTTP,
 and high cache miss-rate findings when no richer cross-entity pattern applies.
+Miss rate is calculated only from successful cache reads and requires at least
+five reads; writes and cache errors are excluded. Work linked only through
+`OriginRequestID` remains visible in the viewer but is not charged to the
+latency or findings of the originating HTTP request.
 
 Each finding contains a stable code, severity, human-readable evidence, a
 suggested action, and IDs of the supporting entries. Applications can use the
@@ -713,25 +843,214 @@ All entity payloads pass through the configured redaction rules before storage. 
 
 ## Available profilers
 
-Each profiler is a separate package. Importing the core does not pull every integration into the build.
+Profile dependencies once in the composition root and inject the returned
+value. The application still owns and closes the original dependency. Prefer
+the `...With(profiler, ...)` form when you keep an explicit profiler; the short
+form uses `webpprof.Default()`.
 
-| Package | Use | Integration point |
+### Core and standard-library profilers
+
+These packages are part of the root module and need only the core `go get`:
+
+| Package | Connect it | What is recorded |
 | --- | --- | --- |
-| `profiler/http` | `Middleware`, `ProfileMiddleware`, `ProfileTransport` | `http.Handler`, HTTP middleware, `http.RoundTripper` |
-| `profiler/gin` | `Middleware`, `MiddlewareWith`, `ProfileMiddlewareWith` | `gin.HandlerFunc` with the Gin route template |
-| `profiler/bun` | `Profile` | Bun `QueryHook` |
-| `profiler/sql` | `ProfileConnector`, `ProfileDriver` | `database/sql/driver` before creating the pool |
-| `profiler/gocache` | `Profile` | `github.com/levskiy0/go-cache` cache and lock contracts |
-| `profiler/goredis` | `Profile` | go-redis command and pipeline hooks |
-| `profiler/goqueue` | `Profile`, `ProfileJobs`, `JobContext`, `ChainContext` | `github.com/levskiy0/go-queue` dispatch, execution, and queue statistics |
-| `profiler/gomail` | `Profile` | `github.com/wneessen/go-mail` client |
-| `profiler/email` | `Profile` | Dependency-neutral `Sender` contract |
-| `profiler/slog` | `Profile` | Standard `slog.Handler` |
-| `profiler/zap` | `Profile` | `zapcore.Core` |
-| `profiler/schedule` | `Profile` | `func(context.Context)` callbacks |
-| `profiler/otel` | `Profile`, `NewSpanProcessor` | OpenTelemetry SDK spans |
+| `profiler/http` | `handler = MiddlewareWith(p, handler)`; `client.Transport = ProfileTransportWith(p, client.Transport)` | Incoming requests, named middleware, outgoing HTTP calls |
+| `profiler/sql` | Wrap a `driver.Connector` or `driver.Driver` before `sql.OpenDB` | `database/sql` queries, callsites, optional plain EXPLAIN |
+| `profiler/slog` | `logger = slog.New(ProfileWith(p, logger.Handler()))` | Level, message, structured fields, request correlation |
+| `profiler/email` | `sender = ProfileWith(p, sender)` | Dependency-neutral `Sender` mail events |
+| `profiler/schedule` | `task = ProfileWith(p, "cleanup", task)` | Scheduled callback duration, success, and panic |
 
-Profile dependencies in the composition root and inject the returned value. The application still owns and closes the original dependency. Use one profiler per operation path; combining Bun, SQL driver, and OpenTelemetry instrumentation on the same database records duplicates.
+```go
+// net/http request and client profiling.
+handler = webpprofhttp.MiddlewareWith(profiler, handler)
+httpClient.Transport = webpprofhttp.ProfileTransportWith(profiler, httpClient.Transport)
+
+// Standard slog profiling. Always keep the returned handler/logger.
+logger = slog.New(webpprofslog.ProfileWith(profiler, logger.Handler()))
+
+// A dependency-neutral mail sender and scheduled callback.
+sender = webpprofemail.ProfileWith(profiler, sender)
+cleanup = webpprofschedule.ProfileWith(profiler, "expired-sessions", cleanup)
+```
+
+For `database/sql`, install the wrapper before the pool is created:
+
+```go
+connector, err := driverWithConnector.OpenConnector(dsn)
+if err != nil {
+    return err
+}
+connector = webpprofsql.ProfileConnectorWith(profiler, connector, webpprofsql.Config{
+    Connection: "primary",
+    Driver:     "postgresql",
+    Database:   "app",
+})
+db := sql.OpenDB(connector)
+```
+
+### Optional profilers
+
+Every row below is an independent module. Installing one row does not install
+SDKs from the other rows.
+
+| Module | Install | Connect it |
+| --- | --- | --- |
+| `profiler/pgx` | `go get github.com/levskiy0/webpprof/profiler/pgx` | Profile a copied `pgx.ConnConfig` or `pgxpool.Config` before connecting |
+| `profiler/gorm` | `go get github.com/levskiy0/webpprof/profiler/gorm` | Install the GORM callback plugin with `ProfileWith` |
+| `profiler/bun` | `go get github.com/levskiy0/webpprof/profiler/bun` | Add the Bun query hook with `ProfileWith` |
+| `profiler/gin` | `go get github.com/levskiy0/webpprof/profiler/gin` | Register request middleware before application middleware |
+| `profiler/chi` | `go get github.com/levskiy0/webpprof/profiler/chi` | Register with `router.Use`; captures the Chi route pattern |
+| `profiler/echo` | `go get github.com/levskiy0/webpprof/profiler/echo` | Register with `app.Use`; captures the Echo route pattern |
+| `profiler/fiber` | `go get github.com/levskiy0/webpprof/profiler/fiber` | Register with `app.Use`; captures the Fiber route pattern |
+| `profiler/grpc` | `go get github.com/levskiy0/webpprof/profiler/grpc` | Add unary and stream interceptors to servers and clients |
+| `profiler/asynq` | `go get github.com/levskiy0/webpprof/profiler/asynq` | Wrap enqueue calls and register worker middleware |
+| `profiler/nats` | `go get github.com/levskiy0/webpprof/profiler/nats` | Wrap core publish/subscribe operations |
+| `profiler/kafka` | `go get github.com/levskiy0/webpprof/profiler/kafka` | Wrap kafka-go writer and reader methods |
+| `profiler/gocache` | `go get github.com/levskiy0/webpprof/profiler/gocache` | Wrap `github.com/levskiy0/go-cache` cache and locks |
+| `profiler/goredis` | `go get github.com/levskiy0/webpprof/profiler/goredis` | Install go-redis command and pipeline hooks |
+| `profiler/goqueue` | `go get github.com/levskiy0/webpprof/profiler/goqueue` | Wrap dispatch/execution and expose queue statistics |
+| `profiler/gomail` | `go get github.com/levskiy0/webpprof/profiler/gomail` | Wrap a `github.com/wneessen/go-mail` client |
+| `profiler/zap` | `go get github.com/levskiy0/webpprof/profiler/zap` | Wrap `zapcore.Core` before constructing the logger |
+| `profiler/zerolog` | `go get github.com/levskiy0/webpprof/profiler/zerolog` | Keep the returned zerolog logger; use `.Ctx(ctx)` for correlation |
+| `profiler/otel` | `go get github.com/levskiy0/webpprof/profiler/otel` | Add the span processor to an OpenTelemetry provider |
+
+#### SQL: pgx, GORM, and Bun
+
+```go
+// Native pgx/pgxpool. Existing pgx tracers are preserved through multitracer.
+poolConfig, err := pgxpool.ParseConfig(databaseURL)
+if err != nil {
+    return err
+}
+poolConfig = webpprofpgx.ProfilePoolConfigWith(profiler, poolConfig, webpprofpgx.Config{
+    Connection: "primary",
+    Database:   "app",
+})
+pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
+
+// GORM. The plugin covers create/query/update/delete/row/raw callbacks.
+if err := webpprofgorm.ProfileWith(profiler, gormDB, webpprofgorm.Config{
+    Connection: "primary",
+    Database:   "app",
+}); err != nil {
+    return err
+}
+
+// Bun. Do not also wrap its underlying database/sql driver, or each query is
+// recorded twice.
+bunDB = webpprofbun.ProfileWith(profiler, bunDB, webpprofbun.Config{
+    Connection: "primary",
+    Driver:     "postgresql",
+    Database:   "app",
+})
+```
+
+#### HTTP frameworks: Gin, Chi, Echo, and Fiber
+
+```go
+ginRouter.Use(webpprofgin.MiddlewareWith(profiler))
+
+// Chi middleware must be inside the router so RoutePattern is available.
+chiRouter.Use(webpprofchi.MiddlewareWith(profiler))
+
+echoApp.Use(webpprofecho.MiddlewareWith(profiler))
+fiberApp.Use(webpproffiber.MiddlewareWith(profiler))
+```
+
+Each framework middleware puts the `RequestCapture` in the operation context.
+Pass that context to pgx, GORM (`db.WithContext(ctx)`), cache, queue, logging,
+and HTTP clients to keep their events related to the request.
+
+#### gRPC server and client
+
+```go
+server := grpc.NewServer(
+    grpc.ChainUnaryInterceptor(webpprofgrpc.UnaryServerInterceptorWith(profiler)),
+    grpc.ChainStreamInterceptor(webpprofgrpc.StreamServerInterceptorWith(profiler)),
+)
+
+connection, err := grpc.NewClient(target,
+    grpc.WithChainUnaryInterceptor(webpprofgrpc.UnaryClientInterceptorWith(profiler)),
+    grpc.WithChainStreamInterceptor(webpprofgrpc.StreamClientInterceptorWith(profiler)),
+)
+```
+
+Server RPCs become request entries with `Method=GRPC` and the full method as
+their route. Client RPCs become outgoing-call entries. Unary and streaming
+contexts correlate downstream profiler events in the same way as HTTP.
+
+#### Asynq
+
+```go
+rawClient := asynq.NewClient(redisOptions)
+defer rawClient.Close() // The application still owns the original client.
+
+queue := webpprofasynq.ProfileWith(profiler, rawClient, webpprofasynq.Config{
+    Connection: "redis",
+})
+_, err := queue.EnqueueContext(ctx, asynq.NewTask("email:deliver", payload))
+
+mux := asynq.NewServeMux()
+mux.Use(webpprofasynq.MiddlewareWith(profiler, webpprofasynq.Config{
+    Connection: "redis",
+}))
+mux.HandleFunc("email:deliver", handleEmail)
+```
+
+Enqueue and worker execution are separate job entries. Asynq payload contents
+are not stored by default; only their byte size is recorded. Set
+`CapturePayload: true` and a `PayloadLimit` only for safe development data.
+
+#### NATS and kafka-go
+
+```go
+// The wrapper exposes focused publish/subscribe methods. Retain rawNATS for
+// Drain/Close and APIs outside that interface.
+natsClient := webpprofnats.ProfileWith(profiler, rawNATS, webpprofnats.Config{
+    Connection: "events",
+})
+err := natsClient.PublishContext(ctx, "players.created", payload)
+_, err = natsClient.QueueSubscribe("players.created", "indexers", handleMessage)
+
+// kafka-go writer and reader ownership also stays with the application.
+writer := webpprofkafka.ProfileWriterWith(profiler, rawWriter, webpprofkafka.Config{
+    Connection: "kafka",
+    Topic:      "players",
+})
+err = writer.WriteMessages(ctx, kafka.Message{Key: playerID, Value: payload})
+
+reader := webpprofkafka.ProfileReaderWith(profiler, rawReader, webpprofkafka.Config{
+    Connection: "kafka",
+    Topic:      "players",
+    GroupID:    "search-index",
+})
+message, err := reader.ReadMessage(ctx)
+```
+
+Message bodies are opt-in and bounded (`CapturePayload`/`PayloadLimit` for
+NATS, `CaptureValue`/`ValueLimit` for Kafka). Subjects/topics, partitions,
+offsets, sizes, errors, and producer/consumer state remain visible without the
+body.
+
+#### Cache, mail, queue, logging, and OpenTelemetry
+
+```go
+cache = webpprofgocache.ProfileWith(profiler, cache, "default")
+webpprofgoredis.ProfileWith(profiler, redisClient, "redis") // installs a hook
+queue = webpprofgoqueue.ProfileWith(profiler, queue, "default")
+mailClient = webpprofgomail.ProfileWith(profiler, mailClient)
+
+zapLogger := zap.New(webpprofzap.ProfileWith(profiler, zapCore))
+zeroLogger = webpprofzerolog.ProfileWith(profiler, zeroLogger)
+zeroLogger.Info().Ctx(ctx).Msg("player loaded") // correlated through ctx
+
+provider = webpprofotel.ProfileWith(profiler, provider)
+```
+
+Use one profiler per operation path. Combining Bun, GORM, a SQL driver, pgx,
+and OpenTelemetry database instrumentation on the same query records
+duplicates. Likewise, do not stack both generic `net/http` request middleware
+and a framework-specific request middleware around the same handler.
 
 ### Operation callsites, SQL EXPLAIN, and replay
 

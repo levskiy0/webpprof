@@ -77,7 +77,8 @@ the example home page. The request records deterministic synthetic examples
 for the five cross-entity backend analysis rules:
 
 - 47 player queries with one SQL fingerprint, detected as a possible N+1;
-- SQL work consuming about 82% of the recorded request timeline;
+- SQL work covering about 73% of the recorded request timeline after
+  overlapping query intervals are counted once;
 - three sequential same-host HTTP calls that could run concurrently;
 - a cache miss immediately followed by 18 identical permission queries;
 - an `auth` middleware invocation taking 430 ms.
@@ -86,8 +87,8 @@ These entries only carry captured durations: the example does not sleep or call
 an external database, HTTP service, or queue. Open the generated request and
 inspect its **Automatic findings** card. Findings are produced by the Go
 analyzer, include a suggested action, and link to the supporting related entry.
-The same request also demonstrates direct slow-query, slow-HTTP, failed-job,
-and cache miss-rate findings retained from the original Diagnostics card.
+The same request also demonstrates direct slow-query, slow-HTTP, and failed-job
+findings retained from the original Diagnostics card.
 
 ## Custom dashboard example
 

@@ -306,14 +306,17 @@ func (c *Client) doJSON(ctx context.Context, method string, requestURL *url.URL,
 	if err != nil {
 		return fmt.Errorf("send request: %w", err)
 	}
-	defer response.Body.Close()
 
 	if response.StatusCode == http.StatusUnauthorized && retryAuth && c.token != "" {
+		if err := response.Body.Close(); err != nil {
+			return fmt.Errorf("close unauthorized response: %w", err)
+		}
 		if err := c.authenticate(ctx, true); err != nil {
 			return err
 		}
 		return c.doJSON(ctx, method, requestURL, body, target, false)
 	}
+	defer response.Body.Close()
 
 	limited := io.LimitReader(response.Body, maxResponseSize+1)
 	payload, err := io.ReadAll(limited)

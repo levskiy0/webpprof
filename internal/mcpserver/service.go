@@ -36,6 +36,7 @@ type Service struct {
 	client ProfilerClient
 }
 
+// New constructs the agent-facing service over a read-only profiler client.
 func New(profilerClient ProfilerClient) (*Service, error) {
 	if profilerClient == nil {
 		return nil, errors.New("webpprof MCP: nil profiler client")
@@ -43,13 +44,16 @@ func New(profilerClient ProfilerClient) (*Service, error) {
 	return &Service{client: profilerClient}, nil
 }
 
+// StatusInput is intentionally empty because status has no filters.
 type StatusInput struct{}
 
+// StatusOutput confirms connectivity and exposes the profiler's current limits.
 type StatusOutput struct {
 	Connected bool           `json:"connected"`
 	Stats     webpprof.Stats `json:"stats"`
 }
 
+// Status reads the profiler's capture and retention status.
 func (s *Service) Status(ctx context.Context, _ StatusInput) (StatusOutput, error) {
 	stats, err := s.client.Stats(ctx)
 	if err != nil {
@@ -58,16 +62,18 @@ func (s *Service) Status(ctx context.Context, _ StatusInput) (StatusOutput, erro
 	return StatusOutput{Connected: true, Stats: stats}, nil
 }
 
+// ListRequestsInput filters a bounded scan of recent request entries.
 type ListRequestsInput struct {
-	Limit         int      `json:"limit,omitempty" jsonschema:"maximum=200,description=Maximum matching requests to return"`
-	Before        uint64   `json:"before,omitempty" jsonschema:"description=Return requests older than this cursor"`
-	Method        string   `json:"method,omitempty" jsonschema:"description=Exact HTTP method filter"`
-	PathContains  string   `json:"path_contains,omitempty" jsonschema:"description=Case-insensitive path substring"`
-	Status        int      `json:"status,omitempty" jsonschema:"description=Exact HTTP status filter"`
-	MinDurationMS float64  `json:"min_duration_ms,omitempty" jsonschema:"minimum=0,description=Minimum request duration in milliseconds"`
-	Tags          []string `json:"tags,omitempty" jsonschema:"description=Tag filters in key or key=value form"`
+	Limit         int      `json:"limit,omitempty" jsonschema:"maximum matching requests to return, capped at 200"`
+	Before        uint64   `json:"before,omitempty" jsonschema:"return requests older than this cursor"`
+	Method        string   `json:"method,omitempty" jsonschema:"exact HTTP method filter"`
+	PathContains  string   `json:"path_contains,omitempty" jsonschema:"case-insensitive path substring"`
+	Status        int      `json:"status,omitempty" jsonschema:"exact HTTP status filter"`
+	MinDurationMS float64  `json:"min_duration_ms,omitempty" jsonschema:"minimum request duration in milliseconds"`
+	Tags          []string `json:"tags,omitempty" jsonschema:"tag filters in key or key=value form"`
 }
 
+// ListRequestsOutput contains matching request summaries and scan metadata.
 type ListRequestsOutput struct {
 	Requests []client.RequestSummary `json:"requests"`
 	Scanned  int                     `json:"scanned"`
@@ -75,6 +81,7 @@ type ListRequestsOutput struct {
 	Cursor   uint64                  `json:"cursor"`
 }
 
+// ListRequests returns matching requests newest first.
 func (s *Service) ListRequests(ctx context.Context, input ListRequestsInput) (ListRequestsOutput, error) {
 	limit := boundedLimit(input.Limit, defaultListLimit, maxListLimit)
 	page, err := s.client.ListEvents(ctx, client.ListEventsOptions{
@@ -111,12 +118,14 @@ func (s *Service) ListRequests(ctx context.Context, input ListRequestsInput) (Li
 	return output, nil
 }
 
+// InspectRequestInput selects one request and controls timeline detail.
 type InspectRequestInput struct {
-	RequestID       string `json:"request_id" jsonschema:"description=Captured request ID"`
-	MaxEvents       int    `json:"max_events,omitempty" jsonschema:"maximum=1000,description=Maximum correlated events to return"`
-	IncludePayloads bool   `json:"include_payloads,omitempty" jsonschema:"description=Include bounded captured bodies values arguments and stacks"`
+	RequestID       string `json:"request_id" jsonschema:"captured request ID"`
+	MaxEvents       int    `json:"max_events,omitempty" jsonschema:"maximum correlated events to return, capped at 1000"`
+	IncludePayloads bool   `json:"include_payloads,omitempty" jsonschema:"include bounded captured bodies values arguments and stacks"`
 }
 
+// InspectRequestOutput contains findings and a compact correlated timeline.
 type InspectRequestOutput struct {
 	Request  client.RequestSummary `json:"request"`
 	Findings []webpprof.Finding    `json:"findings"`
@@ -125,6 +134,7 @@ type InspectRequestOutput struct {
 	HasMore  bool                  `json:"has_more"`
 }
 
+// InspectRequest builds an agent-safe diagnostic view of one request.
 func (s *Service) InspectRequest(ctx context.Context, input InspectRequestInput) (InspectRequestOutput, error) {
 	requestID := strings.TrimSpace(input.RequestID)
 	if requestID == "" {
@@ -148,16 +158,18 @@ func (s *Service) InspectRequest(ctx context.Context, input InspectRequestInput)
 	}, nil
 }
 
+// SearchEventsInput filters a bounded scan of captured events.
 type SearchEventsInput struct {
-	Query     string   `json:"query,omitempty" jsonschema:"description=Case-insensitive text found in event JSON"`
-	Kind      string   `json:"kind,omitempty" jsonschema:"description=Event kind such as query cache log http_call or exception"`
-	RequestID string   `json:"request_id,omitempty" jsonschema:"description=Restrict results to one request timeline"`
-	Tags      []string `json:"tags,omitempty" jsonschema:"description=Tag filters in key or key=value form"`
-	After     uint64   `json:"after,omitempty" jsonschema:"description=Return events newer than this cursor"`
-	Before    uint64   `json:"before,omitempty" jsonschema:"description=Return events older than this cursor"`
-	Limit     int      `json:"limit,omitempty" jsonschema:"maximum=200,description=Maximum matching events to return"`
+	Query     string   `json:"query,omitempty" jsonschema:"case-insensitive text found in event JSON"`
+	Kind      string   `json:"kind,omitempty" jsonschema:"event kind such as query cache log http_call or exception"`
+	RequestID string   `json:"request_id,omitempty" jsonschema:"restrict results to one request timeline"`
+	Tags      []string `json:"tags,omitempty" jsonschema:"tag filters in key or key=value form"`
+	After     uint64   `json:"after,omitempty" jsonschema:"return events newer than this cursor"`
+	Before    uint64   `json:"before,omitempty" jsonschema:"return events older than this cursor"`
+	Limit     int      `json:"limit,omitempty" jsonschema:"maximum matching events to return, capped at 200"`
 }
 
+// SearchEventsOutput contains matching compact events and scan metadata.
 type SearchEventsOutput struct {
 	Events  []EventSummary `json:"events"`
 	Scanned int            `json:"scanned"`
@@ -165,6 +177,7 @@ type SearchEventsOutput struct {
 	Cursor  uint64         `json:"cursor"`
 }
 
+// SearchEvents finds recent events without returning captured payload bodies.
 func (s *Service) SearchEvents(ctx context.Context, input SearchEventsInput) (SearchEventsOutput, error) {
 	limit := boundedLimit(input.Limit, defaultListLimit, maxListLimit)
 	page, err := s.client.ListEvents(ctx, client.ListEventsOptions{
@@ -190,19 +203,23 @@ func (s *Service) SearchEvents(ctx context.Context, input SearchEventsInput) (Se
 	return output, nil
 }
 
+// WaitForRequestInput describes the next request an agent is waiting for.
 type WaitForRequestInput struct {
-	After         uint64  `json:"after,omitempty" jsonschema:"description=Wait only for requests newer than this cursor"`
-	Method        string  `json:"method,omitempty" jsonschema:"description=Exact HTTP method filter"`
-	PathContains  string  `json:"path_contains,omitempty" jsonschema:"description=Path substring filter"`
-	Status        int     `json:"status,omitempty" jsonschema:"description=Exact HTTP status filter"`
-	MinDurationMS float64 `json:"min_duration_ms,omitempty" jsonschema:"minimum=0,description=Minimum request duration in milliseconds"`
-	TimeoutMS     int64   `json:"timeout_ms,omitempty" jsonschema:"maximum=120000,description=Maximum wait time in milliseconds"`
+	After         uint64  `json:"after,omitempty" jsonschema:"wait only for requests newer than this cursor"`
+	Method        string  `json:"method,omitempty" jsonschema:"exact HTTP method filter"`
+	PathContains  string  `json:"path_contains,omitempty" jsonschema:"path substring filter"`
+	Status        int     `json:"status,omitempty" jsonschema:"exact HTTP status filter"`
+	MinDurationMS float64 `json:"min_duration_ms,omitempty" jsonschema:"minimum request duration in milliseconds"`
+	TimeoutMS     int64   `json:"timeout_ms,omitempty" jsonschema:"maximum wait time in milliseconds, capped at 120000"`
 }
 
+// WaitForRequestOutput contains the first newly captured matching request.
 type WaitForRequestOutput struct {
 	Request client.RequestSummary `json:"request"`
 }
 
+// WaitForRequest blocks until a matching request is captured or the bounded
+// timeout expires.
 func (s *Service) WaitForRequest(ctx context.Context, input WaitForRequestInput) (WaitForRequestOutput, error) {
 	timeout := time.Duration(input.TimeoutMS) * time.Millisecond
 	if timeout <= 0 {

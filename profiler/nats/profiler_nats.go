@@ -3,6 +3,7 @@ package nats
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/levskiy0/webpprof"
@@ -25,13 +26,20 @@ type Client interface {
 	QueueSubscribe(string, string, nats.MsgHandler) (*nats.Subscription, error)
 }
 
-func Profile(client Client, configs ...Config) Client {
+// ProfiledClient adds a context-aware publish operation for request
+// correlation while preserving the wrapped core NATS API.
+type ProfiledClient interface {
+	Client
+	PublishContext(context.Context, string, []byte) error
+}
+
+func Profile(client Client, configs ...Config) ProfiledClient {
 	return ProfileWith(webpprof.Default(), client, configs...)
 }
 
-func ProfileWith(p *webpprof.Profiler, client Client, configs ...Config) Client {
-	if p == nil || client == nil {
-		return client
+func ProfileWith(p *webpprof.Profiler, client Client, configs ...Config) ProfiledClient {
+	if client == nil {
+		return nil
 	}
 	return &profiledClient{inner: client, profiler: p, config: firstConfig(configs)}
 }
@@ -49,7 +57,10 @@ func (c *profiledClient) Publish(subject string, payload []byte) error {
 // PublishContext publishes while correlating the dispatch with ctx.
 func (c *profiledClient) PublishContext(ctx context.Context, subject string, payload []byte) error {
 	startedAt := time.Now().UTC()
-	callsite := c.profiler.CaptureCallsite(webpprof.KindJob)
+	var callsite []webpprof.SourceFrame
+	if c.profiler != nil {
+		callsite = c.profiler.CaptureCallsite(webpprof.KindJob)
+	}
 	err := c.inner.Publish(subject, payload)
 	c.record(ctx, subject, "", "dispatched", payload, startedAt, callsite, err)
 	return err
@@ -57,7 +68,10 @@ func (c *profiledClient) PublishContext(ctx context.Context, subject string, pay
 
 func (c *profiledClient) PublishMsg(message *nats.Msg) error {
 	startedAt := time.Now().UTC()
-	callsite := c.profiler.CaptureCallsite(webpprof.KindJob)
+	var callsite []webpprof.SourceFrame
+	if c.profiler != nil {
+		callsite = c.profiler.CaptureCallsite(webpprof.KindJob)
+	}
 	err := c.inner.PublishMsg(message)
 	if message == nil {
 		c.record(context.Background(), "", "", "failed", nil, startedAt, callsite, err)
@@ -68,10 +82,16 @@ func (c *profiledClient) PublishMsg(message *nats.Msg) error {
 }
 
 func (c *profiledClient) Subscribe(subject string, handler nats.MsgHandler) (*nats.Subscription, error) {
+	if c.profiler == nil {
+		return c.inner.Subscribe(subject, handler)
+	}
 	return c.inner.Subscribe(subject, c.wrapHandler(subject, "", handler))
 }
 
 func (c *profiledClient) QueueSubscribe(subject, queue string, handler nats.MsgHandler) (*nats.Subscription, error) {
+	if c.profiler == nil {
+		return c.inner.QueueSubscribe(subject, queue, handler)
+	}
 	return c.inner.QueueSubscribe(subject, queue, c.wrapHandler(subject, queue, handler))
 }
 
@@ -79,18 +99,28 @@ func (c *profiledClient) wrapHandler(subject, queue string, handler nats.MsgHand
 	return func(message *nats.Msg) {
 		startedAt := time.Now().UTC()
 		var payload []byte
+		actualSubject := subject
 		if message != nil {
 			payload = message.Data
 			if message.Subject != "" {
-				subject = message.Subject
+				actualSubject = message.Subject
 			}
 		}
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				c.record(context.Background(), actualSubject, queue, "failed", payload, startedAt, nil, fmt.Errorf("panic: %v", recovered))
+				panic(recovered)
+			}
+		}()
 		handler(message)
-		c.record(context.Background(), subject, queue, "succeeded", payload, startedAt, nil, nil)
+		c.record(context.Background(), actualSubject, queue, "succeeded", payload, startedAt, nil, nil)
 	}
 }
 
 func (c *profiledClient) record(ctx context.Context, subject, queue, state string, payload []byte, startedAt time.Time, callsite []webpprof.SourceFrame, err error) {
+	if c.profiler == nil {
+		return
+	}
 	if err != nil {
 		state = "failed"
 	}
@@ -140,3 +170,4 @@ func errorString(err error) string {
 }
 
 var _ Client = (*profiledClient)(nil)
+var _ ProfiledClient = (*profiledClient)(nil)

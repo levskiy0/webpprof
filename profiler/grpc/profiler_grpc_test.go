@@ -76,6 +76,27 @@ func TestUnaryClientInterceptorRecordsOutgoingCall(t *testing.T) {
 	}
 }
 
+func TestUnaryServerInterceptorHonorsRequestSampling(t *testing.T) {
+	mux := http.NewServeMux()
+	profiler := webpprof.New(mux, webpprof.WithRequestSampleRate(0))
+	t.Cleanup(func() { _ = profiler.Close() })
+
+	interceptor := UnaryServerInterceptorWith(profiler)
+	_, err := interceptor(context.Background(), nil, &googlegrpc.UnaryServerInfo{FullMethod: "/players.PlayerService/Get"}, func(ctx context.Context, _ any) (any, error) {
+		if webpprof.RecordingEnabled(ctx) {
+			t.Fatal("handler context should disable downstream recording")
+		}
+		profiler.LogEventContext(ctx, webpprof.Event{Kind: "player", Name: "loaded"})
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries := readEntries(t, mux); len(entries) != 0 {
+		t.Fatalf("entries = %#v", entries)
+	}
+}
+
 func readEntries(t *testing.T, handler http.Handler) []webpprof.Entry {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodGet, "/debug/webpprof/api/events?limit=20", nil)

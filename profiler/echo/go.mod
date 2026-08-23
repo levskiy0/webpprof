@@ -1,6 +1,6 @@
 module github.com/levskiy0/webpprof/profiler/echo
 
-go 1.25.0
+go 1.25.13
 
 require (
 	github.com/labstack/echo/v4 v4.15.4

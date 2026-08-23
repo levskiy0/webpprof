@@ -28,7 +28,7 @@ func TestPublishContextCorrelatesAndDoesNotCapturePayload(t *testing.T) {
 	mux := http.NewServeMux()
 	profiler := webpprof.New(mux)
 	t.Cleanup(func() { _ = profiler.Close() })
-	client := ProfileWith(profiler, &clientStub{}).(*profiledClient)
+	client := ProfileWith(profiler, &clientStub{})
 	capture := profiler.BeginRequest(webpprof.Request{Method: http.MethodPost, Path: "/players"})
 	ctx := webpprof.WithRequest(context.Background(), capture)
 

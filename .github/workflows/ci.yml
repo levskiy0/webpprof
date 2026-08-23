@@ -20,6 +20,7 @@ jobs:
       - run: ./scripts/modules.sh verify
       - run: ./scripts/modules.sh tidy
       - run: git diff --exit-code -- '**/go.mod' '**/go.sum' go.work go.work.sum
+      - run: ./scripts/check-core-dependencies.sh
       - run: node --check ui/app.js
       - run: ./scripts/modules.sh vet
       - run: ./scripts/modules.sh test -race -shuffle=on -count=1

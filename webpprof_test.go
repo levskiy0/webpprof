@@ -456,8 +456,17 @@ func TestProfilerServesNativeUI(t *testing.T) {
 
 	application := httptest.NewRecorder()
 	mux.ServeHTTP(application, httptest.NewRequest(http.MethodGet, "/debug/webpprof/app.js", nil))
-	if !strings.Contains(application.Body.String(), `"middleware"`) || !strings.Contains(application.Body.String(), "watchedTags") || !strings.Contains(application.Body.String(), "data-copy-request") || !strings.Contains(application.Body.String(), "requestHAR") || !strings.Contains(application.Body.String(), "requestFindingsPanel") || !strings.Contains(application.Body.String(), "diagnostic-severity") || !strings.Contains(application.Body.String(), "tab-badge") || !strings.Contains(application.Body.String(), "dashboard-grid") || !strings.Contains(application.Body.String(), "customDashboardChart") || !strings.Contains(application.Body.String(), "updateFilterPanel") || !strings.Contains(application.Body.String(), "timelineCriticalPath") || !strings.Contains(application.Body.String(), "timelineBreakdown") || !strings.Contains(application.Body.String(), "timelineTreeConnector") || !strings.Contains(application.Body.String(), "queryTab") || !strings.Contains(application.Body.String(), "data-copy-query-replay") {
-		t.Fatal("profiler UI does not include middleware, tag watcher, request export, HAR, diagnostics, configurable dashboard, Gantt timeline, and SQL analysis tabs")
+	if !strings.Contains(application.Body.String(), `"middleware"`) || !strings.Contains(application.Body.String(), "watchedTags") || !strings.Contains(application.Body.String(), "data-copy-request") || !strings.Contains(application.Body.String(), "requestHAR") || !strings.Contains(application.Body.String(), "requestFindingsPanel") || !strings.Contains(application.Body.String(), "diagnostic-severity") || !strings.Contains(application.Body.String(), "tab-badge") || !strings.Contains(application.Body.String(), "dashboard-grid") || !strings.Contains(application.Body.String(), "customDashboardChart") || !strings.Contains(application.Body.String(), "updateFilterPanel") || !strings.Contains(application.Body.String(), "timelineCriticalPath") || !strings.Contains(application.Body.String(), "timelineBreakdown") || !strings.Contains(application.Body.String(), "timelineTreeConnector") || !strings.Contains(application.Body.String(), "queryTab") || !strings.Contains(application.Body.String(), "entityTabDefinitions") || !strings.Contains(application.Body.String(), "data-copy-query-replay") || !strings.Contains(application.Body.String(), "function cardTabs(") || !strings.Contains(application.Body.String(), `role="tab"`) {
+		t.Fatal("profiler UI does not include middleware, tag watcher, request export, HAR, diagnostics, configurable dashboard, Gantt timeline, and entity analysis tabs")
+	}
+	if strings.Contains(application.Body.String(), "query-tabs") || strings.Contains(application.Body.String(), `<span class="card-tab`) {
+		t.Fatal("profiler UI still contains a legacy card-tab renderer")
+	}
+
+	theme := httptest.NewRecorder()
+	mux.ServeHTTP(theme, httptest.NewRequest(http.MethodGet, "/debug/webpprof/theme.css", nil))
+	if strings.Contains(theme.Body.String(), "query-tabs") {
+		t.Fatal("profiler theme still contains legacy query-tab styling")
 	}
 }
 

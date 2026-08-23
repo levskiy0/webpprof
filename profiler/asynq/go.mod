@@ -1,6 +1,6 @@
 module github.com/levskiy0/webpprof/profiler/asynq
 
-go 1.25.0
+go 1.25.13
 
 require (
 	github.com/hibiken/asynq v0.26.0

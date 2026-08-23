@@ -1,7 +1,8 @@
-go 1.25.0
+go 1.25.13
 
 use (
 	.
+	./cmd/webpprof-mcp
 	./profiler/asynq
 	./profiler/bun
 	./profiler/chi

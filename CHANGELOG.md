@@ -5,6 +5,8 @@ versioning and are published from `v*` Git tags.
 
 ## Unreleased
 
+## 0.2.0 - 2026-08-23
+
 ### Added
 
 - Request-related middleware, cache, mail, jobs, logs, HTTP calls, schedules,
@@ -17,6 +19,8 @@ versioning and are published from `v*` Git tags.
   indicators.
 - Request sampling, disabled-kind capture controls, login throttling, and
   hardened browser response headers.
+- Read-only `webpprof-mcp` stdio server for agent-driven request listing,
+  inspection, event search, automatic findings, and waiting for new requests.
 - Runnable custom-profiler example and expanded integration contracts.
 
 ### Changed

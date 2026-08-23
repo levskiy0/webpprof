@@ -18,6 +18,8 @@ const (
 	analysisSequentialHTTPMinimum = 3
 	analysisSequentialHTTPMaxGap  = 100 * time.Millisecond
 	analysisCacheBurstMinimum     = 3
+	analysisCacheQueryMaxGap      = 100 * time.Millisecond
+	analysisCacheMissRateMinimum  = 5
 	analysisSlowRequest           = 500 * time.Millisecond
 	analysisSlowQuery             = 100 * time.Millisecond
 	analysisSlowHTTPCall          = 500 * time.Millisecond
@@ -105,6 +107,7 @@ func (p *Profiler) AnalyzeRequest(requestID string) (RequestAnalysis, bool) {
 }
 
 func analyzeRequest(request Entry, entries []Entry) RequestAnalysis {
+	entries = directRequestEntries(request.ID, entries)
 	queries := make([]analyzedQuery, 0)
 	caches := make([]analyzedCache, 0)
 	httpCalls := make([]analyzedHTTPCall, 0)
@@ -147,7 +150,7 @@ func analyzeRequest(request Entry, entries []Entry) RequestAnalysis {
 	effectiveDuration := requestAnalysisDuration(request, entries)
 	cacheFindings, cacheExplainedQueries := cacheMissQueryFindings(caches, queries)
 	findings := nPlusOneFindings(queries, cacheExplainedQueries)
-	if finding, ok := sqlShareFinding(queries, effectiveDuration); ok {
+	if finding, ok := sqlShareFinding(queries, request.StartedAt, effectiveDuration); ok {
 		findings = append(findings, finding)
 	}
 	findings = append(findings, sequentialHTTPFindings(httpCalls)...)
@@ -169,7 +172,7 @@ func nPlusOneFindings(queries []analyzedQuery, excluded map[string]struct{}) []F
 		if query.fingerprint == "" {
 			continue
 		}
-		if _, skip := excluded[query.fingerprint]; skip {
+		if _, skip := excluded[query.entry.ID]; skip {
 			continue
 		}
 		groups[query.fingerprint] = append(groups[query.fingerprint], query)
@@ -204,18 +207,58 @@ func nPlusOneFindings(queries []analyzedQuery, excluded map[string]struct{}) []F
 	return findings
 }
 
-func sqlShareFinding(queries []analyzedQuery, requestDuration time.Duration) (Finding, bool) {
+func sqlShareFinding(queries []analyzedQuery, requestStartedAt time.Time, requestDuration time.Duration) (Finding, bool) {
 	if requestDuration <= 0 || len(queries) == 0 {
 		return Finding{}, false
 	}
-	var total time.Duration
+	type interval struct {
+		start time.Time
+		end   time.Time
+	}
+	intervals := make([]interval, 0, len(queries))
+	contributing := make([]analyzedQuery, 0, len(queries))
 	var slowest analyzedQuery
 	for _, query := range queries {
 		duration := time.Duration(max(query.entry.DurationNS, 0))
-		total += duration
+		if duration <= 0 || query.entry.StartedAt.IsZero() {
+			continue
+		}
+		start := query.entry.StartedAt
+		end := start.Add(duration)
+		if !requestStartedAt.IsZero() {
+			requestEnd := requestStartedAt.Add(requestDuration)
+			if start.Before(requestStartedAt) {
+				start = requestStartedAt
+			}
+			if end.After(requestEnd) {
+				end = requestEnd
+			}
+		}
+		if !end.After(start) {
+			continue
+		}
+		intervals = append(intervals, interval{start: start, end: end})
+		contributing = append(contributing, query)
 		if duration > time.Duration(slowest.entry.DurationNS) {
 			slowest = query
 		}
+	}
+	if len(intervals) == 0 {
+		return Finding{}, false
+	}
+	sort.Slice(intervals, func(i, j int) bool { return intervals[i].start.Before(intervals[j].start) })
+	total := intervals[0].end.Sub(intervals[0].start)
+	coveredUntil := intervals[0].end
+	for _, current := range intervals[1:] {
+		if !current.start.After(coveredUntil) {
+			if current.end.After(coveredUntil) {
+				total += current.end.Sub(coveredUntil)
+				coveredUntil = current.end
+			}
+			continue
+		}
+		total += current.end.Sub(current.start)
+		coveredUntil = current.end
 	}
 	percentage := int(math.Round(float64(total) / float64(requestDuration) * 100))
 	percentage = min(percentage, 100)
@@ -226,19 +269,20 @@ func sqlShareFinding(queries []analyzedQuery, requestDuration time.Duration) (Fi
 		Code:            FindingSQLDominatesRequest,
 		Severity:        FindingSeverityWarning,
 		Title:           fmt.Sprintf("SQL consumed %d%% of request", percentage),
-		Detail:          fmt.Sprintf("%s across %d queries", findingDuration(total), len(queries)),
+		Detail:          fmt.Sprintf("%s wall-clock coverage across %d queries", findingDuration(total), len(contributing)),
 		Suggestion:      "Inspect the slowest query and reduce query count or execution time.",
 		EntryID:         slowest.entry.ID,
-		RelatedEntryIDs: queryEntryIDs(queries),
+		RelatedEntryIDs: queryEntryIDs(contributing),
 	}, true
 }
 
 func cacheMissQueryFindings(caches []analyzedCache, queries []analyzedQuery) ([]Finding, map[string]struct{}) {
 	findings := make([]Finding, 0)
 	explained := make(map[string]struct{})
-	seen := make(map[string]struct{})
-	for _, cache := range caches {
-		if cache.cache.Hit || cache.cache.Error != "" {
+	claimedQueries := make(map[string]struct{})
+	for cacheIndex := len(caches) - 1; cacheIndex >= 0; cacheIndex-- {
+		cache := caches[cacheIndex]
+		if !cacheReadOperation(cache.cache.Operation) || cache.cache.Hit || cache.cache.Error != "" || strings.TrimSpace(cache.cache.Key) == "" {
 			continue
 		}
 		first := sort.Search(len(queries), func(index int) bool {
@@ -247,10 +291,28 @@ func cacheMissQueryFindings(caches []analyzedCache, queries []analyzedQuery) ([]
 		if first == len(queries) || queries[first].fingerprint == "" {
 			continue
 		}
+		if queries[first].entry.StartedAt.Sub(cache.entry.StartedAt) > analysisCacheQueryMaxGap {
+			continue
+		}
+		resolvedAt, resolved := cacheResolutionAfter(cacheIndex, caches)
 		fingerprint := queries[first].fingerprint
 		repeated := make([]analyzedQuery, 0)
 		for _, query := range queries[first:] {
+			if resolved && !query.entry.StartedAt.Before(resolvedAt) {
+				break
+			}
 			if query.fingerprint != fingerprint {
+				break
+			}
+			if len(repeated) > 0 {
+				previous := repeated[len(repeated)-1].entry
+				previousEnd := previous.StartedAt.Add(time.Duration(max(previous.DurationNS, 0)))
+				if gap := query.entry.StartedAt.Sub(previousEnd); gap > analysisCacheQueryMaxGap {
+					break
+				}
+			}
+			if _, claimed := claimedQueries[query.entry.ID]; claimed {
+				repeated = nil
 				break
 			}
 			repeated = append(repeated, query)
@@ -258,12 +320,10 @@ func cacheMissQueryFindings(caches []analyzedCache, queries []analyzedQuery) ([]
 		if len(repeated) < analysisCacheBurstMinimum {
 			continue
 		}
-		key := cache.entry.ID + "\x00" + fingerprint
-		if _, duplicate := seen[key]; duplicate {
-			continue
+		for _, query := range repeated {
+			claimedQueries[query.entry.ID] = struct{}{}
+			explained[query.entry.ID] = struct{}{}
 		}
-		seen[key] = struct{}{}
-		explained[fingerprint] = struct{}{}
 		entryIDs := append([]string{cache.entry.ID}, queryEntryIDs(repeated)...)
 		findings = append(findings, Finding{
 			Code:            FindingCacheMissQueryBurst,
@@ -275,13 +335,14 @@ func cacheMissQueryFindings(caches []analyzedCache, queries []analyzedQuery) ([]
 			RelatedEntryIDs: entryIDs,
 		})
 	}
+	slices.Reverse(findings)
 	return findings, explained
 }
 
 func sequentialHTTPFindings(calls []analyzedHTTPCall) []Finding {
 	byHost := make(map[string][]analyzedHTTPCall)
 	for _, call := range calls {
-		if call.host == "" || call.entry.DurationNS <= 0 || call.call.Error != "" || call.call.Status >= 400 {
+		if call.host == "" || !safeConcurrentHTTPMethod(call.call.Method) || call.entry.DurationNS <= 0 || call.call.Error != "" || call.call.Status >= 400 {
 			continue
 		}
 		byHost[call.host] = append(byHost[call.host], call)
@@ -440,26 +501,94 @@ func failedOperationFindings(entries []Entry) []Finding {
 }
 
 func cacheMissRateFinding(caches []analyzedCache) (Finding, bool) {
-	if len(caches) < 2 {
+	reads := make([]analyzedCache, 0, len(caches))
+	for _, operation := range caches {
+		if cacheReadOperation(operation.cache.Operation) && operation.cache.Error == "" {
+			reads = append(reads, operation)
+		}
+	}
+	if len(reads) < analysisCacheMissRateMinimum {
 		return Finding{}, false
 	}
-	misses := make([]string, 0, len(caches))
-	for _, operation := range caches {
+	misses := make([]string, 0, len(reads))
+	for _, operation := range reads {
 		if !operation.cache.Hit {
 			misses = append(misses, operation.entry.ID)
 		}
 	}
-	percentage := int(math.Round(float64(len(misses)) / float64(len(caches)) * 100))
+	percentage := int(math.Round(float64(len(misses)) / float64(len(reads)) * 100))
 	if percentage < 50 {
 		return Finding{}, false
 	}
 	return Finding{
 		Code: FindingHighCacheMissRate, Severity: FindingSeverityWarning,
 		Title:      fmt.Sprintf("Cache miss rate is %d%%", percentage),
-		Detail:     fmt.Sprintf("%d of %d cache operations missed", len(misses), len(caches)),
+		Detail:     fmt.Sprintf("%d of %d cache reads missed", len(misses), len(reads)),
 		Suggestion: "Review cache keys, TTLs, warming, and invalidation behavior.",
 		EntryID:    misses[0], RelatedEntryIDs: misses,
 	}, true
+}
+
+func directRequestEntries(requestID string, entries []Entry) []Entry {
+	direct := make([]Entry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.ID == requestID || entry.RequestID == requestID {
+			direct = append(direct, entry)
+		}
+	}
+	return direct
+}
+
+func cacheResolutionAfter(index int, caches []analyzedCache) (time.Time, bool) {
+	miss := caches[index]
+	for _, candidate := range caches[index+1:] {
+		if !sameCacheResource(miss.cache, candidate.cache) || candidate.cache.Error != "" {
+			continue
+		}
+		if cacheWriteOperation(candidate.cache.Operation) || cacheReadOperation(candidate.cache.Operation) && candidate.cache.Hit {
+			return candidate.entry.StartedAt, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func sameCacheResource(left, right Cache) bool {
+	if strings.TrimSpace(left.Key) == "" || left.Key != right.Key {
+		return false
+	}
+	return left.Store == "" || right.Store == "" || strings.EqualFold(left.Store, right.Store)
+}
+
+func cacheReadOperation(operation string) bool {
+	operation = strings.ToLower(strings.TrimSpace(operation))
+	if operation == "" || strings.HasPrefix(operation, "get_") {
+		return true
+	}
+	switch operation {
+	case "get", "mget", "hget", "hmget", "hgetall", "has", "exists", "hexists", "pull", "remember", "remember_forever", "lock_get":
+		return true
+	default:
+		return false
+	}
+}
+
+func cacheWriteOperation(operation string) bool {
+	operation = strings.ToLower(strings.TrimSpace(operation))
+	switch operation {
+	case "put", "set", "setex", "psetex", "setnx", "mset", "hset", "hmset", "add", "forever", "increment", "decrement", "incr", "decr", "incrby", "decrby", "getset":
+		return true
+	default:
+		return false
+	}
+}
+
+func safeConcurrentHTTPMethod(method string) bool {
+	switch strings.ToUpper(strings.TrimSpace(method)) {
+	case "GET", "HEAD", "OPTIONS":
+		return true
+	default:
+		return false
+	}
 }
 
 func requestAnalysisDuration(request Entry, entries []Entry) time.Duration {

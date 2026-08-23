@@ -97,7 +97,13 @@ func TestClientAuthenticatesAndInspectsRequest(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	profilerClient, err := client.New(server.URL+"/debug/webpprof/", client.WithToken("test-token"))
+	httpClient := &http.Client{Transport: &http.Transport{MaxConnsPerHost: 1}}
+	t.Cleanup(httpClient.CloseIdleConnections)
+	profilerClient, err := client.New(
+		server.URL+"/debug/webpprof/",
+		client.WithToken("test-token"),
+		client.WithHTTPClient(httpClient),
+	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

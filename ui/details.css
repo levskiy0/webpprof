@@ -1395,17 +1395,14 @@ pre code {
 }
 
 .gantt-track {
-  height: 22px;
+  height: 14px;
   overflow: hidden;
-  border: 1px solid #e1e5eb;
+  border: 1px solid #e1e5eb80;
   border-radius: 4px;
   background-color: #f8fafc;
-  background-image: linear-gradient(90deg, #e2e6ec 1px, transparent 1px);
-  background-size: 25% 100%;
 }
 
-.gantt-track svg { display: block; width: 100%; height: 20px; }
-.gantt-row.critical .gantt-bar { stroke: #27313f; stroke-width: 3px; vector-effect: non-scaling-stroke; }
+.gantt-track svg { display: block; width: 100%; height: 12px; }
 .gantt-row.bottleneck .gantt-bar { stroke: #9b3c22; stroke-width: 4px; }
 .gantt-row.failed .gantt-bar { fill: #ef4444; }
 
@@ -1545,6 +1542,29 @@ pre code {
 .card-tab.active .tab-badge {
   background: #6266d6;
   color: #fff;
+}
+
+.card-tabs {
+  align-items: stretch;
+  overflow: hidden;
+}
+
+.card-tab-list {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-x: auto;
+}
+
+.card-tab-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  margin-left: auto;
+}
+
+.card-tab-actions .copy-button {
+  margin-left: 0;
 }
 
 .diagnostic-healthy > span {

@@ -11,17 +11,18 @@ shift
 
 root_dir=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 
-tidy_module() {
+run_with_local_core() {
 	module_dir=$1
+	shift
 	if [ "$module_dir" = "." ]; then
-		(cd "$module_dir" && go mod tidy)
+		(cd "$module_dir" && GOWORK=off "$@")
 		return
 	fi
 	(
 		cd "$module_dir"
 		go mod edit -replace=github.com/levskiy0/webpprof@v0.2.0="$root_dir"
 		trap 'go mod edit -dropreplace=github.com/levskiy0/webpprof@v0.2.0' EXIT
-		go mod tidy
+		GOWORK=off "$@"
 	)
 }
 
@@ -30,16 +31,16 @@ find . -name go.mod -not -path './.git/*' -print | sort | while IFS= read -r mod
 	echo "==> $action $module_dir"
 	case "$action" in
 		tidy)
-			tidy_module "$module_dir"
+			run_with_local_core "$module_dir" go mod tidy
 			;;
 		verify)
-			(cd "$module_dir" && go mod verify)
+			run_with_local_core "$module_dir" go mod verify
 			;;
 		vet)
-			(cd "$module_dir" && go vet ./...)
+			run_with_local_core "$module_dir" go vet ./...
 			;;
 		test)
-			(cd "$module_dir" && go test "$@" ./...)
+			run_with_local_core "$module_dir" go test "$@" ./...
 			;;
 		*)
 			echo "unknown action: $action" >&2

@@ -1,4 +1,4 @@
-const state={events:new Map(),analyses:new Map(),analysisPending:new Set(),sessionMode:"live",kind:"request",selected:"",queryTab:"query",requestTab:"payload",responseTab:"response",relatedTab:"query",screen:"dashboard",paused:false,pending:[],socket:null,reconnect:0,reconnectTimer:0,socketStableTimer:0,runtime:[],queueStats:{sources:[]},dashboard:{widgets:[]},dashboardHistory:new Map(),stats:{},hasMore:false,loadingMore:false,watchedTags:new Set(),filters:{}};
+const state={events:new Map(),analyses:new Map(),analysisPending:new Set(),sessionMode:"live",kind:"request",selected:"",queryTab:"query",entityTab:"",requestTab:"payload",responseTab:"response",relatedTab:"query",screen:"dashboard",paused:false,pending:[],socket:null,reconnect:0,reconnectTimer:0,socketStableTimer:0,runtime:[],queueStats:{sources:[]},dashboard:{widgets:[]},dashboardHistory:new Map(),stats:{},hasMore:false,loadingMore:false,watchedTags:new Set(),filters:{}};
 const pageSize=250;
 const kinds=["request","middleware","query","cache","job","email","log","http_call","schedule","exception","event",""];
 const navItems=["dashboard",...kinds];
@@ -151,6 +151,7 @@ function bind(){
       if(group==="response")state.responseTab=value;
       if(group==="related")state.relatedTab=value;
       if(group==="query")state.queryTab=value;
+      if(group==="entity")state.entityTab=value;
       syncLocation();
       renderDetail(state.events.get(state.selected));
       return;
@@ -1063,6 +1064,7 @@ function openDetail(id,historyMode="push"){
   state.responseTab="response";
   state.relatedTab=firstRelatedTab(groupFor(state.events.get(id)));
   state.queryTab="query";
+  state.entityTab=firstEntityTab(state.events.get(id));
   state.screen="detail";
   syncLocation(historyMode);
   renderKinds();
@@ -1097,11 +1099,15 @@ function restoreLocation(){
   restoreListFilters(params);
   state.selected=entry;
   const tab=params.get("tab")||"";
-  if(state.events.get(entry).kind==="query")state.queryTab=["query","callsite","explain","replay"].includes(tab)?tab:"query";
-  else if(tab==="request")state.requestTab="payload";
+  const selectedEvent=state.events.get(entry);
+  if(selectedEvent.kind==="query")state.queryTab=["query","callsite","explain","replay"].includes(tab)?tab:"query";
+  else if(selectedEvent.kind!=="request"){
+    const entityTabs=entityTabDefinitions(selectedEvent);
+    state.entityTab=entityTabs.some(item=>item.key===tab)?tab:(entityTabs[0]?.key||"");
+  }else if(tab==="request")state.requestTab="payload";
   else if(tab==="response")state.responseTab="response";
   else if(tab)state.relatedTab=tab;
-  else state.relatedTab=firstRelatedTab(groupFor(state.events.get(entry)));
+  else state.relatedTab=firstRelatedTab(groupFor(selectedEvent));
   state.screen="detail";
 }
 
@@ -1134,7 +1140,9 @@ function syncLocation(mode="replace"){
   for(const tag of [...state.watchedTags].sort())url.searchParams.append("tag",tag);
   if(state.screen==="detail"&&state.selected){
     url.searchParams.set("entry",state.selected);
-    url.searchParams.set("tab",state.events.get(state.selected)?.kind==="query"?state.queryTab:state.relatedTab);
+    const selectedKind=state.events.get(state.selected)?.kind;
+    const selectedTab=selectedKind==="query"?state.queryTab:selectedKind==="request"?state.relatedTab:state.entityTab;
+    if(selectedTab)url.searchParams.set("tab",selectedTab);
     url.searchParams.set("view",state.kind||"all");
   }else{
     url.searchParams.set("view",state.screen==="dashboard"?"dashboard":state.kind||"all");
@@ -1254,11 +1262,11 @@ function renderDetail(event){
     return;
   }
   if(event.kind==="cache"){
-    elements.detail.innerHTML=`<div class="detail-body telescope-stack">${cacheDetailsCard(event,group.request)}${cacheValueCard(event)}${callsiteCard(event)}</div>`;
+    elements.detail.innerHTML=`<div class="detail-body telescope-stack">${cacheDetailsCard(event,group.request)}${entityContentCard(event)}</div>`;
     return;
   }
   if(event.kind!=="request"){
-    elements.detail.innerHTML=`<div class="detail-body telescope-stack">${entityDetailsCard(event,group.request)}${entityContentCards(event)}${callsiteCard(event)}</div>`;
+    elements.detail.innerHTML=`<div class="detail-body telescope-stack">${entityDetailsCard(event,group.request)}${entityContentCard(event)}</div>`;
     return;
   }
   if(!state.analyses.has(event.id)&&state.sessionMode==="live")loadRequestAnalysis(event.id);
@@ -1416,10 +1424,49 @@ function queryCallsitePanel(query){
   return frames.length?`<div class="query-callsite">${frames.map((frame,index)=>`<div class="source-frame${index===0?" primary":""}"><span class="source-index">${index+1}</span><span class="source-copy"><strong>${sourceFrameLocation(frame,false)}</strong><code>${escapeHTML(frame.function||"unknown function")}</code></span><span class="source-actions">${safeSourceURL(frame.url)?`<a href="${escapeHTML(safeSourceURL(frame.url))}" title="Open source">Open</a>`:""}<button type="button" data-copy-source="${index}" title="Copy ${escapeHTML(`${frame.file||""}:${frame.line||0}`)}">Copy</button></span></div>`).join("")}</div>`:'<div class="panel-empty">No Go callsite was captured.</div>';
 }
 
-function callsiteCard(event){
-  const frames=Array.isArray(event.data?.callsite)?event.data.callsite:[];
-  if(!frames.length)return"";
-  return`<section class="detail-section telescope-card"><nav class="card-tabs query-tabs" aria-label="Callsite"><span class="card-tab active">Callsite</span><span class="tab-badge">${frames.length}</span></nav><div class="card-panel">${queryCallsitePanel(event)}</div></section>`;
+function firstEntityTab(event){
+  return entityTabDefinitions(event)[0]?.key||"";
+}
+
+function entityTabDefinitions(event){
+  if(!event)return[];
+  const data=event.data||{};
+  const tabs=[];
+  const add=(key,label,panel)=>tabs.push({key,label,panel});
+  if(event.kind==="cache"){
+    const value=formatCapturedValue(data.value||"");
+    const message=data.hit?"The cache integration did not capture a value for this hit.":"No value was returned for this cache operation.";
+    add("value","Value",codePanel(value,data.truncated,message));
+  }
+  if(event.kind==="job")add("arguments","Arguments",entityValuePanel(data.arguments,"No job arguments were captured."));
+  if(event.kind==="email"){
+    if(data.text)add("text","Text",entityValuePanel(data.text,"No text body was captured.",false));
+    if(data.html)add("html","HTML",entityValuePanel(data.html,"No HTML body was captured.",false));
+  }
+  if(event.kind==="log"){
+    add("fields","Fields",entityValuePanel(data.fields,"No structured fields were captured."));
+    if(data.stack)add("stack","Stack",entityValuePanel(data.stack,"No stack was captured.",false));
+  }
+  if(event.kind==="http_call"){
+    add("request","Request",entityMessagePanel("Request",data.request));
+    add("response","Response",entityMessagePanel("Response",data.response));
+  }
+  if(event.kind==="schedule"){
+    add("payload","Payload",entityValuePanel(data.payload,"No schedule payload was captured."));
+    if(data.panic||data.error)add(data.panic?"panic":"error",data.panic?"Panic":"Error",entityValuePanel(data.panic||data.error,"No failure details were captured.",false));
+  }
+  if(event.kind==="exception")add("stack","Stack",entityValuePanel(data.stack,"No stack was captured.",false));
+  if(event.kind==="event")add("fields","Fields",entityValuePanel(data.fields,"No event fields were captured."));
+  if(Array.isArray(data.callsite)&&data.callsite.length)add("callsite","Callsite",queryCallsitePanel(event));
+  return tabs;
+}
+
+function entityContentCard(event){
+  const definitions=entityTabDefinitions(event);
+  if(!definitions.length)return"";
+  if(!definitions.some(tab=>tab.key===state.entityTab))state.entityTab=definitions[0].key;
+  const active=definitions.find(tab=>tab.key===state.entityTab)||definitions[0];
+  return tabbedCard("Entity",definitions.map(({key,label})=>({key,label})),active.key,active.panel);
 }
 
 function queryPlanPanel(query){
@@ -1478,13 +1525,6 @@ function cacheDetailsCard(cache,request){
   return`<section class="detail-section telescope-card"><div class="section-heading"><h3>Cache Details</h3><span>${escapeHTML(cache.id)}</span></div><dl class="facts">${facts.map(([name,value,html])=>`<dt>${escapeHTML(name)}</dt><dd>${html?value:escapeHTML(value)}</dd>`).join("")}</dl>${data.error?`<div class="danger-block">${escapeHTML(data.error)}</div>`:""}</section>`;
 }
 
-function cacheValueCard(cache){
-  const data=cache.data||{};
-  const value=formatCapturedValue(data.value||"");
-  const message=data.hit?"The cache integration did not capture a value for this hit.":"No value was returned for this cache operation.";
-  return`<section class="detail-section telescope-card"><nav class="card-tabs query-tabs" aria-label="Cache value"><span class="card-tab active">Value</span>${data.truncated?'<span class="value-truncated">truncated</span>':""}</nav><div class="card-panel">${codePanel(value,data.truncated,message)}</div></section>`;
-}
-
 function formatCapturedValue(value){
   if(!value)return"";
   try{
@@ -1536,40 +1576,16 @@ function entityDetailsCard(event,request){
   return`<section class="detail-section telescope-card"><div class="section-heading"><h3>${escapeHTML(detailTitle(event.kind))}</h3><span>${escapeHTML(event.id)}</span></div><dl class="facts">${facts.map(([name,value,html])=>`<dt>${escapeHTML(name)}</dt><dd>${html?value:escapeHTML(value)}</dd>`).join("")}</dl>${data.error?`<div class="danger-block">${escapeHTML(data.error)}</div>`:""}</section>`;
 }
 
-function entityContentCards(event){
-  const data=event.data||{};
-  const cards=[];
-  if(event.kind==="job")cards.push(entityCodeCard("Arguments",data.arguments,"No job arguments were captured."));
-  if(event.kind==="email"){
-    if(data.text)cards.push(entityCodeCard("Text",data.text,"No text body was captured.",false));
-    if(data.html)cards.push(entityCodeCard("HTML",data.html,"No HTML body was captured.",false));
-  }
-  if(event.kind==="log"){
-    cards.push(entityCodeCard("Fields",data.fields,"No structured fields were captured."));
-    if(data.stack)cards.push(entityCodeCard("Stack",data.stack,"No stack was captured.",false));
-  }
-  if(event.kind==="http_call"){
-    cards.push(entityMessageCard("Request",data.request));
-    cards.push(entityMessageCard("Response",data.response));
-  }
-  if(event.kind==="schedule"){
-    cards.push(entityCodeCard("Payload",data.payload,"No schedule payload was captured."));
-    if(data.panic||data.error)cards.push(entityCodeCard(data.panic?"Panic":"Error",data.panic||data.error,"No failure details were captured.",false));
-  }
-  if(event.kind==="exception")cards.push(entityCodeCard("Stack",data.stack,"No stack was captured.",false));
-  if(event.kind==="event")cards.push(entityCodeCard("Fields",data.fields,"No event fields were captured."));
-  return cards.join("");
-}
-
-function entityCodeCard(title,value,emptyMessage,json=true){
+function entityValuePanel(value,emptyMessage,json=true){
   const content=value&&json?JSON.stringify(value,null,2):value||"";
-  return`<section class="detail-section telescope-card"><nav class="card-tabs query-tabs" aria-label="${escapeHTML(title)}"><span class="card-tab active">${escapeHTML(title)}</span></nav><div class="card-panel">${codePanel(content,false,emptyMessage)}</div></section>`;
+  return codePanel(content,false,emptyMessage);
 }
 
-function entityMessageCard(title,message={}){
+function entityMessagePanel(title,message={}){
+  message=message||{};
   const body=message.body||"";
   const headerPanel=headersPanel(message.headers,"No headers were captured.");
-  return`<section class="detail-section telescope-card"><div class="section-heading"><h3>${escapeHTML(title)}</h3><span>${escapeHTML(message.content_type||"")}</span></div><div class="entity-message-grid"><div><span>Body</span>${codePanel(body,message.truncated,`No ${title.toLowerCase()} body was captured.`)}</div><div><span>Headers</span>${headerPanel}</div></div></section>`;
+  return`<div class="entity-message-grid"><div><span>Body</span>${codePanel(body,message.truncated,`No ${title.toLowerCase()} body was captured.`)}</div><div><span>Headers</span>${headerPanel}</div></div>`;
 }
 
 function requestCard(request){
@@ -1600,9 +1616,26 @@ function relatedCard(group,event,tabs){
   return tabbedCard("Related",tabs,state.relatedTab,panel);
 }
 
+function cardTabs(group,tabs,active,action=""){
+  const key=group.toLowerCase();
+  const panelID=`card-panel-${key}`;
+  const buttons=tabs.map(tab=>{
+    const selected=active===tab.key;
+    const tabID=`card-tab-${key}-${tab.key}`;
+    let meta="";
+    if(tab.badge!==undefined)meta=`<span class="tab-badge">${escapeHTML(tab.badge)}</span>`;
+    else if(tab.count!==undefined)meta=` <span class="tab-count">(${escapeHTML(tab.count)})</span>`;
+    return`<button type="button" id="${escapeHTML(tabID)}" role="tab" aria-selected="${selected}" aria-controls="${escapeHTML(panelID)}" tabindex="${selected?0:-1}" data-card-tab="${escapeHTML(`${key}:${tab.key}`)}" class="card-tab${selected?" active":""}">${escapeHTML(tab.label)}${meta}</button>`;
+  }).join("");
+  return`<nav class="card-tabs" aria-label="${escapeHTML(group)} details"><div class="card-tab-list" role="tablist">${buttons}</div>${action?`<div class="card-tab-actions">${action}</div>`:""}</nav>`;
+}
+
 function tabbedCard(group,tabs,active,panel,action=""){
   const key=group.toLowerCase();
-  return`<section class="detail-section telescope-card"><nav class="card-tabs" aria-label="${escapeHTML(group)} details">${tabs.map(tab=>`<button type="button" data-card-tab="${key}:${tab.key}" class="card-tab${active===tab.key?" active":""}">${escapeHTML(tab.label)}${tab.badge===undefined?(tab.count===undefined?"":` <span>(${tab.count})</span>`):`<span class="tab-badge">${escapeHTML(tab.badge)}</span>`}</button>`).join("")}${action}</nav><div class="card-panel">${panel}</div></section>`;
+  const activeTab=tabs.find(tab=>tab.key===active)||tabs[0];
+  const panelID=`card-panel-${key}`;
+  const labelledBy=activeTab?` aria-labelledby="${escapeHTML(`card-tab-${key}-${activeTab.key}`)}"`:"";
+  return`<section class="detail-section telescope-card">${cardTabs(group,tabs,active,action)}<div class="card-panel" id="${escapeHTML(panelID)}" role="tabpanel"${labelledBy}>${panel}</div></section>`;
 }
 
 function codePanel(value,truncated,emptyMessage){

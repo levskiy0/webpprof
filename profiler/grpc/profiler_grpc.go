@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +28,9 @@ func UnaryServerInterceptorWith(p *webpprof.Profiler) googlegrpc.UnaryServerInte
 	return func(ctx context.Context, req any, info *googlegrpc.UnaryServerInfo, handler googlegrpc.UnaryHandler) (response any, err error) {
 		if p == nil || !webpprof.RecordingEnabled(ctx) {
 			return handler(ctx, req)
+		}
+		if !shouldCapture(p, info.FullMethod) {
+			return handler(webpprof.WithoutRecording(ctx), req)
 		}
 
 		capture := p.BeginRequest(serverRequest(info.FullMethod, "unary"))
@@ -55,6 +60,9 @@ func StreamServerInterceptorWith(p *webpprof.Profiler) googlegrpc.StreamServerIn
 		ctx := stream.Context()
 		if p == nil || !webpprof.RecordingEnabled(ctx) {
 			return handler(srv, stream)
+		}
+		if !shouldCapture(p, info.FullMethod) {
+			return handler(srv, &serverStream{ServerStream: stream, ctx: webpprof.WithoutRecording(ctx)})
 		}
 
 		capture := p.BeginRequest(serverRequest(info.FullMethod, "stream"))
@@ -182,6 +190,10 @@ func serverRequest(method, rpcType string) webpprof.Request {
 		Route:    method,
 		Protocol: "gRPC",
 	}
+}
+
+func shouldCapture(p *webpprof.Profiler, method string) bool {
+	return p.ShouldCaptureRequest(&http.Request{Method: "GRPC", URL: &url.URL{Path: method}})
 }
 
 func requestResult(err error) webpprof.RequestResult {

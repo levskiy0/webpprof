@@ -1,6 +1,6 @@
 module github.com/levskiy0/webpprof/profiler/gorm
 
-go 1.25.0
+go 1.25.13
 
 require (
 	github.com/levskiy0/webpprof v0.2.0
