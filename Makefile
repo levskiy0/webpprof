@@ -1,4 +1,4 @@
-.PHONY: tidy deps verify vet test check
+.PHONY: tidy deps verify vet test vuln check
 
 tidy:
 	./scripts/modules.sh tidy
@@ -14,6 +14,9 @@ vet:
 
 test:
 	./scripts/modules.sh test
+
+vuln:
+	./scripts/modules.sh vuln
 
 check: deps verify vet test
 	node --check ui/app.js

@@ -70,7 +70,7 @@ func TestDashboardSnapshotIsolatesCallbackErrorsAndPanics(t *testing.T) {
 
 func TestProfilerServesDashboardSnapshot(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := newProfiler(Dashboard(WithCustomMetric(DashboardMetric{ID: "orders", Title: "Orders", Value: dashboardConstant(7)})))
+	profiler := newProfiler(WithUnsafeUnauthenticatedAccess(), Dashboard(WithCustomMetric(DashboardMetric{ID: "orders", Title: "Orders", Value: dashboardConstant(7)})))
 	profiler.register(mux)
 	t.Cleanup(func() { _ = profiler.Close() })
 

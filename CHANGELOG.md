@@ -5,6 +5,38 @@ versioning and are published from `v*` Git tags.
 
 ## Unreleased
 
+## 0.4.0 - 2026-08-24
+
+### Added
+
+- Added reproducible end-to-end overhead and steady-state eviction benchmarks,
+  with reference results documented in the README.
+- Added server-side HTTP and MCP filters for request fields, text, tags,
+  cursors, and minimum or maximum duration.
+- Added `govulncheck` gates for every Go module and regression coverage for the
+  schedule and go-mail integrations.
+
+### Changed
+
+- Replaced the event-order slice with a circular deque and moved persistence
+  I/O outside the shared store mutex while preserving write order.
+- Moved SQLite persistence and its driver dependency to the independent
+  `storage/sqlite` module behind the core `EntryStorage` interface.
+- Made unauthenticated access to captured data an explicit unsafe opt-in through
+  `WithUnsafeUnauthenticatedAccess`; standalone servers require a token or the
+  unsafe option.
+
+### Removed
+
+- Removed the core `WithSQLiteStorage` option. Install the optional
+  `storage/sqlite` module and use `sqlite.Open` with `WithStorage`; existing
+  database files remain compatible.
+
+### Fixed
+
+- Raised the `profiler/gorm` `golang.org/x/text` constraint to `v0.39.0` so its
+  reachable dependency graph is clear of GO-2026-5970.
+
 ## 0.3.2 - 2026-08-23
 
 ### Fixed

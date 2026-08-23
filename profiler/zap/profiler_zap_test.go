@@ -14,7 +14,7 @@ import (
 
 func TestProfilePreservesCoreAndRecordsFields(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	core := zapcore.NewCore(zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()), zapcore.AddSync(io.Discard), zapcore.DebugLevel)
 	profiled := ProfileWith(profiler, core)

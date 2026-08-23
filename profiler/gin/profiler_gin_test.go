@@ -14,7 +14,7 @@ import (
 func TestMiddlewareCapturesPanicAsCorrelatedException(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	router := gin.New()
 	router.Use(MiddlewareWith(profiler))
@@ -55,7 +55,7 @@ func TestMiddlewareCapturesPanicAsCorrelatedException(t *testing.T) {
 func TestProfileMiddlewareCapturesNamedInvocation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	router := gin.New()
 	router.Use(MiddlewareWith(profiler))

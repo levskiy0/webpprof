@@ -21,7 +21,7 @@ func (d testIntegration) Profile(scope Scope, value string) string {
 }
 
 func TestProfileUsesIntegrationScope(t *testing.T) {
-	profiler := New(http.NewServeMux())
+	profiler := New(http.NewServeMux(), WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	integration := testIntegration{name: "test"}
 	if got := Profile("client", integration); got != "client-profiled" {

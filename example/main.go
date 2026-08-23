@@ -17,6 +17,7 @@ import (
 	webpprofhttp "github.com/levskiy0/webpprof/profiler/http"
 	webpprofslog "github.com/levskiy0/webpprof/profiler/slog"
 	webpprofsql "github.com/levskiy0/webpprof/profiler/sql"
+	webpprofsqlite "github.com/levskiy0/webpprof/storage/sqlite"
 	modernsqlite "modernc.org/sqlite"
 )
 
@@ -42,13 +43,17 @@ func run() (runErr error) {
 	metrics := &demoMetrics{}
 	baseLogHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})
 	baseSQLiteDriver := driver.Driver(&modernsqlite.Driver{})
+	profilerStore, err := webpprofsqlite.Open(context.Background(), profilerStorage)
+	if err != nil {
+		return fmt.Errorf("open profiler storage: %w", err)
+	}
 
 	// CONNECT WEBPPROF
 	//
 	// The application remains ordinary net/http + database/sql + slog. Its
 	// three boundaries are decorated once here; application code below keeps
 	// using the standard APIs.
-	profiler := webpprof.New(mux, profilerOptions(metrics, profilerStorage)...)
+	profiler := webpprof.New(mux, profilerOptions(metrics, profilerStore)...)
 	defer func() { runErr = errors.Join(runErr, profiler.Close()) }()
 
 	logHandler := webpprofslog.ProfileWith(profiler, baseLogHandler)

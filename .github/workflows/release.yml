@@ -6,6 +6,7 @@ on:
       - "v*"
       - "profiler/**/v*"
       - "cmd/**/v*"
+      - "storage/**/v*"
 
 permissions:
   contents: read
@@ -24,6 +25,8 @@ jobs:
       - run: node --check ui/app.js
       - run: ./scripts/modules.sh vet
       - run: ./scripts/modules.sh test -race -shuffle=on -count=1
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+      - run: ./scripts/modules.sh vuln
 
   release:
     needs: verify

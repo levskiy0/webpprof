@@ -21,7 +21,7 @@ func (s senderStub) Send(context.Context, webpprof.Email) error {
 
 func TestProfilerEmailRecordsAndReturnsOriginalError(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	want := errors.New("smtp unavailable")
 	sender := ProfileWith(profiler, senderStub{err: want})

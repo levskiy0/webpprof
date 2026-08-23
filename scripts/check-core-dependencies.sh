@@ -24,7 +24,8 @@ for optional in \
 	go.opentelemetry.io/otel \
 	go.uber.org/zap \
 	google.golang.org/grpc \
-	gorm.io/gorm
+	gorm.io/gorm \
+	modernc.org/sqlite
 do
 	if printf '%s\n' "$modules" | grep -F "$optional " >/dev/null; then
 		echo "optional module leaked into core graph: $optional" >&2

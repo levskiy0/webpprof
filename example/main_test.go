@@ -426,7 +426,7 @@ func TestDiagnosticsScenarioRecordsEveryFindingExample(t *testing.T) {
 func newTestApplication(t *testing.T) (*application, *webpprof.Profiler, *http.ServeMux) {
 	t.Helper()
 	profilerMux := http.NewServeMux()
-	profiler := webpprof.New(profilerMux)
+	profiler := webpprof.New(profilerMux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	databasePath := filepath.Join(t.TempDir(), "example.db")
 	databaseDriver := webpprofsql.ProfileDriverWith(profiler, &modernsqlite.Driver{}, webpprofsql.Config{

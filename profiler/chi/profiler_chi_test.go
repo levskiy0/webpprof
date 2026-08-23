@@ -12,7 +12,7 @@ import (
 
 func TestMiddlewareRecordsRoutePattern(t *testing.T) {
 	profilerMux := http.NewServeMux()
-	profiler := webpprof.New(profilerMux)
+	profiler := webpprof.New(profilerMux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	router := chilibrary.NewRouter()
 	router.Use(MiddlewareWith(profiler))

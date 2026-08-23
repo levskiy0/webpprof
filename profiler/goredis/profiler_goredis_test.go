@@ -22,7 +22,7 @@ func (c *testClient) AddHook(hook redis.Hook) {
 
 func TestProfileInstallsOneHookAndRecordsMiss(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	client := &testClient{}
 	ProfileWith(profiler, client, "sessions")

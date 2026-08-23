@@ -22,7 +22,7 @@ func (c *clientStub) Lookup(context.Context, string) (string, error) {
 
 func TestProfileWithLogsRelatedEvent(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 
 	inner := &clientStub{value: "Ada"}

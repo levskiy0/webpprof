@@ -75,7 +75,7 @@ func TestServiceListRequestsFiltersNewestFirst(t *testing.T) {
 	if output.Scanned != 3 || output.Cursor != 3 {
 		t.Fatalf("ListRequests() metadata = %+v", output)
 	}
-	if fake.listOptions.Kind != webpprof.KindRequest || fake.listOptions.Limit != maxListLimit {
+	if fake.listOptions.Kind != webpprof.KindRequest || fake.listOptions.Limit != 1 || fake.listOptions.Method != "post" || fake.listOptions.PathContains != "orders" || fake.listOptions.MinDuration != 500*time.Millisecond {
 		t.Fatalf("ListEvents() options = %+v", fake.listOptions)
 	}
 }
@@ -118,6 +118,25 @@ func TestServiceInspectRequestOmitsPayloadsByDefault(t *testing.T) {
 	}
 	if cache.Key != "session:42" || len(output.Findings) != 1 {
 		t.Fatalf("InspectRequest() output = %+v", output)
+	}
+}
+
+func TestServiceSearchEventsForwardsServerFilters(t *testing.T) {
+	t.Parallel()
+	fake := &fakeProfilerClient{page: client.EventPage{Events: []webpprof.Entry{{ID: "query-1", Kind: webpprof.KindQuery, DurationNS: int64(25 * time.Millisecond), Data: json.RawMessage(`{"sql":"select needle"}`)}}, Scanned: 7}}
+	service, err := New(fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := service.SearchEvents(t.Context(), SearchEventsInput{Query: "needle", Kind: string(webpprof.KindQuery), MinDurationMS: 10, MaxDurationMS: 50, Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(output.Events) != 1 || output.Scanned != 7 {
+		t.Fatalf("SearchEvents() = %+v", output)
+	}
+	if fake.listOptions.Query != "needle" || fake.listOptions.Kind != webpprof.KindQuery || fake.listOptions.MinDuration != 10*time.Millisecond || fake.listOptions.MaxDuration != 50*time.Millisecond || fake.listOptions.Limit != 1 {
+		t.Fatalf("ListEvents() options = %+v", fake.listOptions)
 	}
 }
 

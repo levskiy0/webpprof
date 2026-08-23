@@ -49,6 +49,22 @@ request profiler, SQL query profiler, debug toolbar, and observability dashboard
 - Let Codex, Claude, Cursor, and other MCP clients inspect the profiler through
   the separate read-only `webpprof-mcp` binary.
 
+## Measured capture overhead
+
+The repository includes an end-to-end benchmark that marshals and redacts a
+custom event, records it into a full 10,000-entry store, and performs one FIFO
+eviction per operation. Results on Go 1.25.13, darwin/arm64, Apple M3 Pro:
+
+| Configuration | Time/op | Bytes/op | Allocs/op |
+| --- | ---: | ---: | ---: |
+| Event kind disabled | 52 ns | 224 B | 1 |
+| In-memory, steady-state eviction | 3.89 µs | 4,162 B | 51 |
+| JSONL journal, steady-state eviction | 8.82 µs | 5,204 B | 60 |
+
+Run `go test . -run '^$' -bench BenchmarkProfilerOverhead -benchmem -count=6`
+on deployment-like hardware before enabling additional capture kinds in a hot
+path. These numbers are a reproducible reference, not a latency guarantee.
+
 ## Getting started
 
 Install the core module:
@@ -117,7 +133,7 @@ go install github.com/levskiy0/webpprof/cmd/webpprof-mcp@latest
 webpprof-mcp --version
 ```
 
-For a reproducible install, replace `@latest` with `@v0.3.1`.
+For a reproducible install, replace `@latest` with `@v0.4.0`.
 The executable is written to `GOBIN`, or `GOPATH/bin` when `GOBIN` is unset.
 
 Register it in Codex:
@@ -257,21 +273,34 @@ selective capture, redaction, disabled event kinds, and optional local storage
 at startup:
 
 ```go
+sqliteStorage, err := webpprofsqlite.Open(context.Background(), "./var/webpprof/events.db")
+if err != nil {
+    return err
+}
+
 profiler := webpprof.New(
     mux,
+    webpprof.WithToken(os.Getenv("WEBPPROF_TOKEN")),
     webpprof.WithRetention(2*time.Hour),
     webpprof.WithMaxEvents(25_000),
     webpprof.WithMaxBytes(128<<20),
     webpprof.WithRequestSampleRate(0.25),
-    webpprof.WithSQLiteStorage("./var/webpprof/events.db"),
+    webpprof.WithStorage(sqliteStorage),
 )
 ```
+
+SQLite is an independent optional module:
+`go get github.com/levskiy0/webpprof/storage/sqlite@latest`. Without a token,
+captured data and live updates stay unavailable. Local-only unauthenticated
+access requires the explicit `webpprof.WithUnsafeUnauthenticatedAccess()`
+option. Existing SQLite users should follow the
+[migration example](docs/configuration.md#migrating-sqlite-configuration).
 
 Keep the profiler on loopback or a private administrative network and always
 set a strong token outside source control. Captures can contain personal data,
 SQL, request bodies, mail, and stack traces even after automatic redaction.
 
-- [Capture, retention, sampling, storage, and selective capture](docs/configuration.md)
+- [Capture, storage migration, server filters, and selective capture](docs/configuration.md)
 - [Custom dashboard widgets and metrics](docs/dashboard.md)
 - [Deployment and data security](docs/security.md)
 

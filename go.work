@@ -3,6 +3,7 @@ go 1.25.13
 use (
 	.
 	./cmd/webpprof-mcp
+	./example
 	./profiler/asynq
 	./profiler/bun
 	./profiler/chi
@@ -21,6 +22,11 @@ use (
 	./profiler/pgx
 	./profiler/zap
 	./profiler/zerolog
+	./storage/sqlite
 )
 
 replace github.com/levskiy0/webpprof v0.3.1 => .
+
+replace github.com/levskiy0/webpprof v0.4.0 => .
+
+replace github.com/levskiy0/webpprof/storage/sqlite v0.1.0 => ./storage/sqlite

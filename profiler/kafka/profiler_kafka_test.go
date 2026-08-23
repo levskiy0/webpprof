@@ -17,7 +17,7 @@ func (writerStub) WriteMessages(context.Context, ...kafkalibrary.Message) error 
 
 func TestWriterRecordsOneDispatchPerMessage(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	writer := ProfileWriterWith(profiler, writerStub{}, Config{Topic: "players"})
 

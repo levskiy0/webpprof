@@ -79,7 +79,11 @@ func (p *Profiler) writeAsset(w http.ResponseWriter, name, contentType string) {
 
 func (p *Profiler) createSession(w http.ResponseWriter, r *http.Request) {
 	if p.config.token == "" {
-		w.WriteHeader(http.StatusNoContent)
+		if p.config.unsafeNoAuth {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		writeError(w, http.StatusServiceUnavailable, "authentication is not configured")
 		return
 	}
 	client := loginClient(r)
@@ -152,7 +156,12 @@ func (p *Profiler) deleteSession(w http.ResponseWriter, _ *http.Request) {
 
 func (p *Profiler) authorize(next http.Handler) http.Handler {
 	if p.config.token == "" {
-		return next
+		if p.config.unsafeNoAuth {
+			return next
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			writeError(w, http.StatusServiceUnavailable, "authentication is not configured")
+		})
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie(sessionCookieName)
@@ -165,21 +174,41 @@ func (p *Profiler) authorize(next http.Handler) http.Handler {
 }
 
 func (p *Profiler) listEvents(w http.ResponseWriter, r *http.Request) {
-	kind := Kind(r.URL.Query().Get("kind"))
-	requestID := r.URL.Query().Get("request_id")
-	tags := r.URL.Query()["tag"]
-	after, _ := strconv.ParseUint(r.URL.Query().Get("after"), 10, 64)
-	before, _ := strconv.ParseUint(r.URL.Query().Get("before"), 10, 64)
+	query := r.URL.Query()
+	after, _ := strconv.ParseUint(query.Get("after"), 10, 64)
+	before, _ := strconv.ParseUint(query.Get("before"), 10, 64)
+	minDurationMS, _ := strconv.ParseFloat(query.Get("min_duration_ms"), 64)
+	maxDurationMS, _ := strconv.ParseFloat(query.Get("max_duration_ms"), 64)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 || limit > 1_000 {
 		limit = 200
 	}
-	entries := p.store.listBefore(kind, requestID, tags, after, before, limit+1)
+	entries, scanned := p.store.listBeforeFiltered(eventFilters{
+		Kind:          Kind(query.Get("kind")),
+		RequestID:     query.Get("request_id"),
+		Tags:          query["tag"],
+		Query:         query.Get("q"),
+		Method:        query.Get("method"),
+		PathContains:  query.Get("path_contains"),
+		Status:        parseStatusFilter(query.Get("status")),
+		MinDurationNS: int64(max(0, minDurationMS) * float64(time.Millisecond)),
+		MaxDurationNS: int64(max(0, maxDurationMS) * float64(time.Millisecond)),
+		After:         after,
+		Before:        before,
+	}, limit+1)
 	hasMore := len(entries) > limit
 	if hasMore {
 		entries = entries[1:]
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": entries, "has_more": hasMore, "stats": p.store.stats()})
+	writeJSON(w, http.StatusOK, map[string]any{"events": entries, "scanned": scanned, "has_more": hasMore, "stats": p.store.stats()})
+}
+
+func parseStatusFilter(value string) int {
+	status, err := strconv.Atoi(value)
+	if err != nil || status < 100 || status > 599 {
+		return 0
+	}
+	return status
 }
 
 func (p *Profiler) getEvent(w http.ResponseWriter, r *http.Request) {

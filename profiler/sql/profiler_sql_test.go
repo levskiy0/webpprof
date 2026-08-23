@@ -79,7 +79,7 @@ func (r *rowsStub) Next(destination []driver.Value) error {
 
 func TestProfilerSQLConnectorRecordsContextQuery(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	connector := connectorStub{}
 	profiled := ProfileConnectorWith(
@@ -125,7 +125,7 @@ func TestProfilerSQLConnectorRecordsContextQuery(t *testing.T) {
 
 func TestProfilerSQLExplainCapturesPlanWithoutExecutingItAsTheQuery(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	profiled := ProfileConnectorWith(
 		profiler,
@@ -168,7 +168,7 @@ func TestProfilerSQLExplainCapturesPlanWithoutExecutingItAsTheQuery(t *testing.T
 
 func TestProfilerSQLExplainCapturesUpdatePlan(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	profiled := ProfileConnectorWith(
 		profiler,

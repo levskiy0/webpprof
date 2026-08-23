@@ -44,12 +44,12 @@ type storageKind string
 const (
 	storageKindMemory  storageKind = "memory"
 	storageKindJournal storageKind = "disk"
-	storageKindSQLite  storageKind = "sqlite"
 )
 
 type config struct {
 	basePath         string
 	token            string
+	unsafeNoAuth     bool
 	retention        time.Duration
 	maxEvents        int
 	maxBytes         int64
@@ -65,6 +65,7 @@ type config struct {
 	excluded         []requestPattern
 	storageKind      storageKind
 	storagePath      string
+	storage          EntryStorage
 	requestSample    float64
 	requestLimit     int64
 	disabledKinds    map[Kind]struct{}
@@ -77,6 +78,7 @@ type config struct {
 // Leave path empty to keep the default in-memory-only behavior.
 func WithStoragePath(storagePath string) Option {
 	return func(c *config) {
+		c.storage = nil
 		c.storagePath = strings.TrimSpace(storagePath)
 		c.storageKind = storageKindMemory
 		if c.storagePath != "" {
@@ -85,17 +87,21 @@ func WithStoragePath(storagePath string) Option {
 	}
 }
 
-// WithSQLiteStorage persists captured entries in a SQLite database. The
-// database is replayed when the profiler starts and is pruned with the same
-// retention, event-count, and byte limits as the in-memory store. Leave path
-// empty to keep the default in-memory-only behavior. When multiple storage
-// options are supplied, the last one wins.
-func WithSQLiteStorage(storagePath string) Option {
+// WithStorage uses an optional external storage implementation. The storage is
+// replayed at startup, pruned with the in-memory retention limits, and closed
+// with the profiler. When multiple storage options are supplied, the last one
+// wins. Pass nil to restore in-memory-only behavior.
+func WithStorage(storage EntryStorage) Option {
 	return func(c *config) {
-		c.storagePath = strings.TrimSpace(storagePath)
+		c.storage = storage
+		c.storagePath = ""
 		c.storageKind = storageKindMemory
-		if c.storagePath != "" {
-			c.storageKind = storageKindSQLite
+		if storage != nil {
+			name := strings.TrimSpace(storage.Name())
+			if name == "" {
+				name = "custom"
+			}
+			c.storageKind = storageKind(name)
 		}
 	}
 }
@@ -186,6 +192,14 @@ func WithBasePath(path string) Option {
 
 func WithToken(token string) Option {
 	return func(c *config) { c.token = token }
+}
+
+// WithUnsafeUnauthenticatedAccess exposes captured profiler data without a
+// token. This should only be used on trusted local or otherwise isolated
+// transports; remote access should use WithToken and additional network-level
+// controls.
+func WithUnsafeUnauthenticatedAccess() Option {
+	return func(c *config) { c.unsafeNoAuth = true }
 }
 
 func WithRetention(retention time.Duration) Option {

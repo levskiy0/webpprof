@@ -12,7 +12,7 @@ import (
 
 func TestMiddlewareRecordsFiberRoute(t *testing.T) {
 	profilerMux := http.NewServeMux()
-	profiler := webpprof.New(profilerMux)
+	profiler := webpprof.New(profilerMux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	app := fiberlibrary.New()
 	app.Use(MiddlewareWith(profiler))

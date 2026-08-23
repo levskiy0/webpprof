@@ -70,6 +70,7 @@ type ListRequestsInput struct {
 	PathContains  string   `json:"path_contains,omitempty" jsonschema:"case-insensitive path substring"`
 	Status        int      `json:"status,omitempty" jsonschema:"exact HTTP status filter"`
 	MinDurationMS float64  `json:"min_duration_ms,omitempty" jsonschema:"minimum request duration in milliseconds"`
+	MaxDurationMS float64  `json:"max_duration_ms,omitempty" jsonschema:"maximum request duration in milliseconds"`
 	Tags          []string `json:"tags,omitempty" jsonschema:"tag filters in key or key=value form"`
 }
 
@@ -85,16 +86,25 @@ type ListRequestsOutput struct {
 func (s *Service) ListRequests(ctx context.Context, input ListRequestsInput) (ListRequestsOutput, error) {
 	limit := boundedLimit(input.Limit, defaultListLimit, maxListLimit)
 	page, err := s.client.ListEvents(ctx, client.ListEventsOptions{
-		Kind:   webpprof.KindRequest,
-		Tags:   input.Tags,
-		Before: input.Before,
-		Limit:  maxListLimit,
+		Kind:         webpprof.KindRequest,
+		Tags:         input.Tags,
+		Before:       input.Before,
+		Method:       input.Method,
+		PathContains: input.PathContains,
+		Status:       input.Status,
+		MinDuration:  time.Duration(input.MinDurationMS * float64(time.Millisecond)),
+		MaxDuration:  time.Duration(input.MaxDurationMS * float64(time.Millisecond)),
+		Limit:        limit,
 	})
 	if err != nil {
 		return ListRequestsOutput{}, fmt.Errorf("list requests: %w", err)
 	}
 
-	output := ListRequestsOutput{Requests: make([]client.RequestSummary, 0, limit), Scanned: len(page.Events), HasMore: page.HasMore, Cursor: page.Stats.Cursor}
+	scanned := page.Scanned
+	if scanned == 0 && len(page.Events) > 0 {
+		scanned = len(page.Events)
+	}
+	output := ListRequestsOutput{Requests: make([]client.RequestSummary, 0, limit), Scanned: scanned, HasMore: page.HasMore, Cursor: page.Stats.Cursor}
 	pathContains := strings.ToLower(strings.TrimSpace(input.PathContains))
 	for index := len(page.Events) - 1; index >= 0 && len(output.Requests) < limit; index-- {
 		request, err := client.DecodeRequest(page.Events[index])
@@ -110,7 +120,8 @@ func (s *Service) ListRequests(ctx context.Context, input ListRequestsInput) (Li
 		if input.Status != 0 && input.Status != request.Status {
 			continue
 		}
-		if float64(request.DurationNS)/float64(time.Millisecond) < input.MinDurationMS {
+		durationMS := float64(request.DurationNS) / float64(time.Millisecond)
+		if durationMS < input.MinDurationMS || input.MaxDurationMS > 0 && durationMS > input.MaxDurationMS {
 			continue
 		}
 		output.Requests = append(output.Requests, request)
@@ -160,13 +171,15 @@ func (s *Service) InspectRequest(ctx context.Context, input InspectRequestInput)
 
 // SearchEventsInput filters a bounded scan of captured events.
 type SearchEventsInput struct {
-	Query     string   `json:"query,omitempty" jsonschema:"case-insensitive text found in event JSON"`
-	Kind      string   `json:"kind,omitempty" jsonschema:"event kind such as query cache log http_call or exception"`
-	RequestID string   `json:"request_id,omitempty" jsonschema:"restrict results to one request timeline"`
-	Tags      []string `json:"tags,omitempty" jsonschema:"tag filters in key or key=value form"`
-	After     uint64   `json:"after,omitempty" jsonschema:"return events newer than this cursor"`
-	Before    uint64   `json:"before,omitempty" jsonschema:"return events older than this cursor"`
-	Limit     int      `json:"limit,omitempty" jsonschema:"maximum matching events to return, capped at 200"`
+	Query         string   `json:"query,omitempty" jsonschema:"case-insensitive text found in event JSON"`
+	Kind          string   `json:"kind,omitempty" jsonschema:"event kind such as query cache log http_call or exception"`
+	RequestID     string   `json:"request_id,omitempty" jsonschema:"restrict results to one request timeline"`
+	Tags          []string `json:"tags,omitempty" jsonschema:"tag filters in key or key=value form"`
+	After         uint64   `json:"after,omitempty" jsonschema:"return events newer than this cursor"`
+	Before        uint64   `json:"before,omitempty" jsonschema:"return events older than this cursor"`
+	Limit         int      `json:"limit,omitempty" jsonschema:"maximum matching events to return, capped at 200"`
+	MinDurationMS float64  `json:"min_duration_ms,omitempty" jsonschema:"minimum event duration in milliseconds"`
+	MaxDurationMS float64  `json:"max_duration_ms,omitempty" jsonschema:"maximum event duration in milliseconds"`
 }
 
 // SearchEventsOutput contains matching compact events and scan metadata.
@@ -181,18 +194,25 @@ type SearchEventsOutput struct {
 func (s *Service) SearchEvents(ctx context.Context, input SearchEventsInput) (SearchEventsOutput, error) {
 	limit := boundedLimit(input.Limit, defaultListLimit, maxListLimit)
 	page, err := s.client.ListEvents(ctx, client.ListEventsOptions{
-		Kind:      webpprof.Kind(strings.TrimSpace(input.Kind)),
-		RequestID: strings.TrimSpace(input.RequestID),
-		Tags:      input.Tags,
-		After:     input.After,
-		Before:    input.Before,
-		Limit:     maxListLimit,
+		Kind:        webpprof.Kind(strings.TrimSpace(input.Kind)),
+		RequestID:   strings.TrimSpace(input.RequestID),
+		Tags:        input.Tags,
+		Query:       input.Query,
+		MinDuration: time.Duration(input.MinDurationMS * float64(time.Millisecond)),
+		MaxDuration: time.Duration(input.MaxDurationMS * float64(time.Millisecond)),
+		After:       input.After,
+		Before:      input.Before,
+		Limit:       limit,
 	})
 	if err != nil {
 		return SearchEventsOutput{}, fmt.Errorf("search events: %w", err)
 	}
+	scanned := page.Scanned
+	if scanned == 0 && len(page.Events) > 0 {
+		scanned = len(page.Events)
+	}
 	query := strings.ToLower(strings.TrimSpace(input.Query))
-	output := SearchEventsOutput{Events: make([]EventSummary, 0, limit), Scanned: len(page.Events), HasMore: page.HasMore, Cursor: page.Stats.Cursor}
+	output := SearchEventsOutput{Events: make([]EventSummary, 0, limit), Scanned: scanned, HasMore: page.HasMore, Cursor: page.Stats.Cursor}
 	for index := len(page.Events) - 1; index >= 0 && len(output.Events) < limit; index-- {
 		entry := page.Events[index]
 		if query != "" && !strings.Contains(strings.ToLower(string(entry.Data)), query) {
@@ -210,6 +230,7 @@ type WaitForRequestInput struct {
 	PathContains  string  `json:"path_contains,omitempty" jsonschema:"path substring filter"`
 	Status        int     `json:"status,omitempty" jsonschema:"exact HTTP status filter"`
 	MinDurationMS float64 `json:"min_duration_ms,omitempty" jsonschema:"minimum request duration in milliseconds"`
+	MaxDurationMS float64 `json:"max_duration_ms,omitempty" jsonschema:"maximum request duration in milliseconds"`
 	TimeoutMS     int64   `json:"timeout_ms,omitempty" jsonschema:"maximum wait time in milliseconds, capped at 120000"`
 }
 
@@ -236,6 +257,7 @@ func (s *Service) WaitForRequest(ctx context.Context, input WaitForRequestInput)
 		PathContains: strings.TrimSpace(input.PathContains),
 		Status:       input.Status,
 		MinDuration:  time.Duration(input.MinDurationMS * float64(time.Millisecond)),
+		MaxDuration:  time.Duration(input.MaxDurationMS * float64(time.Millisecond)),
 	})
 	if err != nil {
 		return WaitForRequestOutput{}, fmt.Errorf("wait for request: %w", err)

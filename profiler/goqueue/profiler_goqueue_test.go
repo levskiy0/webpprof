@@ -26,7 +26,7 @@ func (testJob) Handle(...any) error {
 
 func TestProfileRecordsDispatchExecutionAndStats(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	connections := goqueue.NewConnections().Add("default", &goqueue.Connection{Driver: goqueue.DriverSync})
 	queue := ProfileWith(profiler, goqueue.NewQueue(connections, slog.New(slog.NewTextHandler(io.Discard, nil)), false))
@@ -54,7 +54,7 @@ func TestProfileRecordsDispatchExecutionAndStats(t *testing.T) {
 
 func TestJobContextCorrelatesDispatchedJobWithRequest(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	connections := goqueue.NewConnections().Add("default", &goqueue.Connection{Driver: goqueue.DriverSync})
 	queue := ProfileWith(profiler, goqueue.NewQueue(connections, slog.New(slog.NewTextHandler(io.Discard, nil)), false))

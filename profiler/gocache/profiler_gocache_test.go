@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/levskiy0/webpprof"
 	gocache "github.com/levskiy0/go-cache"
+	"github.com/levskiy0/webpprof"
 )
 
 func TestProfileCorrelatesContextOperations(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	cache, err := gocache.NewMemory()
 	if err != nil {

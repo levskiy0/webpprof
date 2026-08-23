@@ -16,7 +16,7 @@ import (
 
 func TestPluginRecordsGORMQuery(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux, webpprof.WithCallsiteKinds(webpprof.KindQuery))
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess(), webpprof.WithCallsiteKinds(webpprof.KindQuery))
 	t.Cleanup(func() { _ = profiler.Close() })
 	plugin := NewWith(profiler, Config{Connection: "primary", Database: "app"})
 	db := testDB(context.Background())
@@ -37,7 +37,7 @@ func TestPluginRecordsGORMQuery(t *testing.T) {
 
 func TestPluginRecordsGORMError(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	plugin := NewWith(profiler)
 	db := testDB(context.Background())

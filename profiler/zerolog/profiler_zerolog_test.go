@@ -14,7 +14,7 @@ import (
 
 func TestProfilePreservesOutputAndRecordsContext(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 
 	var output bytes.Buffer

@@ -15,7 +15,7 @@ import (
 
 func TestUnaryServerInterceptorCorrelatesNestedOperations(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 
 	interceptor := UnaryServerInterceptorWith(profiler)
@@ -52,7 +52,7 @@ func TestUnaryServerInterceptorCorrelatesNestedOperations(t *testing.T) {
 
 func TestUnaryClientInterceptorRecordsOutgoingCall(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 
 	interceptor := UnaryClientInterceptorWith(profiler)
@@ -78,7 +78,7 @@ func TestUnaryClientInterceptorRecordsOutgoingCall(t *testing.T) {
 
 func TestUnaryServerInterceptorHonorsRequestSampling(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux, webpprof.WithRequestSampleRate(0))
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess(), webpprof.WithRequestSampleRate(0))
 	t.Cleanup(func() { _ = profiler.Close() })
 
 	interceptor := UnaryServerInterceptorWith(profiler)

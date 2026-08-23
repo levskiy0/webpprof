@@ -9,15 +9,16 @@ import (
 
 // profilerOptions keeps optional retention, storage, callsite, and dashboard
 // tuning out of the short integration block in main.go.
-func profilerOptions(metrics *demoMetrics, storagePath string) []webpprof.Option {
+func profilerOptions(metrics *demoMetrics, storage webpprof.EntryStorage) []webpprof.Option {
 	return []webpprof.Option{
 		webpprof.WithRetention(2 * time.Hour),
 		webpprof.WithMaxEvents(25_000),
 		webpprof.WithMaxBytes(128 << 20),
 		webpprof.WithBodyLimit(32 << 10),
+		webpprof.WithUnsafeUnauthenticatedAccess(),
 		// Profiler events use a separate SQLite file and survive restarts while
 		// remaining bounded by the retention, event, and byte limits above.
-		webpprof.WithSQLiteStorage(storagePath),
+		webpprof.WithStorage(storage),
 		webpprof.WithExcludedRequests("GET /favicon.ico"),
 		webpprof.WithCallsiteKinds(
 			webpprof.KindQuery,

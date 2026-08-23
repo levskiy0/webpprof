@@ -8,6 +8,8 @@ stack traces even after automatic redaction.
 
 - Bind a standalone profiler to loopback or a private administrative network.
 - Set a strong `WithToken` value outside source control.
+- Treat `WithUnsafeUnauthenticatedAccess` as a local-only, explicit unsafe
+  opt-in. Without either option, profiler API routes remain unavailable.
 - Never expose an unprotected profiler to the public internet.
 - Use `WithSecureCookie(true)` whenever the profiler is served through HTTPS.
 - Put remote access behind private-network or reverse-proxy authentication as a
@@ -35,7 +37,7 @@ only for safe development data. See [MCP security](mcp.md#remote-connections).
 
 ## Persistence
 
-`WithSQLiteStorage` and `WithStoragePath` write owner-only local files
+The optional SQLite backend and `WithStoragePath` write owner-only local files
 containing captured application data. Do not place them in a static/public
 directory, commit them to version control, or retain them longer than the
 investigation requires. See [Capture and storage

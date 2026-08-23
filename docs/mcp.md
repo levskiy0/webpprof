@@ -18,8 +18,8 @@ go install github.com/levskiy0/webpprof/cmd/webpprof-mcp@latest
 webpprof-mcp --version
 ```
 
-For a reproducible install, use `@v0.3.1`. The corresponding repository tag is
-`cmd/webpprof-mcp/v0.3.1`. `go install` writes the executable
+For a reproducible install, use `@v0.4.0`. The corresponding repository tag is
+`cmd/webpprof-mcp/v0.4.0`. `go install` writes the executable
 to `GOBIN`, or to `GOPATH/bin` when `GOBIN` is unset; that directory must be in
 `PATH`.
 
@@ -85,9 +85,9 @@ MCP JSON configuration:
 | Tool | Purpose |
 | --- | --- |
 | `webpprof_status` | Check connectivity, capacity, retention, storage, sampling, and the latest cursor. |
-| `webpprof_list_requests` | List requests and filter by method, path, status, duration, tags, or cursor. |
+| `webpprof_list_requests` | List requests with server-side method, path, status, min/max duration, tags, and cursor filters. |
 | `webpprof_inspect_request` | Return automatic findings and the correlated request timeline. |
-| `webpprof_search_events` | Search SQL, cache, logs, HTTP calls, exceptions, and other captured events. |
+| `webpprof_search_events` | Search server-side by text, kind, request, tags, cursor, and min/max duration. |
 | `webpprof_wait_for_request` | Wait for the next matching request after an observed cursor. |
 
 A typical agent workflow is:

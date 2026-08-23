@@ -27,7 +27,7 @@ func (c clientStub) EnqueueContext(context.Context, *asynqlib.Task, ...asynqlib.
 
 func TestProfileRecordsDispatchWithoutPayloadByDefault(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	client := ProfileWith(profiler, clientStub{info: &asynqlib.TaskInfo{ID: "task-42", Queue: "critical", MaxRetry: 3}})
 
@@ -46,7 +46,7 @@ func TestProfileRecordsDispatchWithoutPayloadByDefault(t *testing.T) {
 
 func TestMiddlewareRecordsFailure(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	want := errors.New("delivery failed")
 	handler := MiddlewareWith(profiler)(asynqlib.HandlerFunc(func(context.Context, *asynqlib.Task) error { return want }))

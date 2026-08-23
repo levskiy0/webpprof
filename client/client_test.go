@@ -127,7 +127,7 @@ func TestClientAuthenticatesAndInspectsRequest(t *testing.T) {
 
 func TestClientInspectsRequestWithRedactedSensitiveHeaders(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	profiler.LogRequest(webpprof.Request{
 		Meta:   webpprof.Meta{ID: "request-with-sensitive-headers"},

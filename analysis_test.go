@@ -336,7 +336,7 @@ func countFindings(findings []Finding, code FindingCode) int {
 }
 
 func TestRequestAnalysisEndpoint(t *testing.T) {
-	profiler := newProfiler()
+	profiler := newProfiler(WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	profiler.LogRequest(Request{Meta: Meta{ID: "request-endpoint", StartedAt: time.Now().UTC(), Duration: time.Second}})
 

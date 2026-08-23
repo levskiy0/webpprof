@@ -49,13 +49,23 @@ func TestStartOwnsSingletonServer(t *testing.T) {
 	}
 }
 
+func TestStartRejectsMissingAuthenticationBeforeListening(t *testing.T) {
+	if profiler := Default(); profiler != nil {
+		_ = profiler.Close()
+	}
+	profiler, err := Start("127.0.0.1:0")
+	if err == nil || profiler != nil || !strings.Contains(err.Error(), "authentication is required") {
+		t.Fatalf("Start() = %p, %v", profiler, err)
+	}
+}
+
 func TestNewReturnsExistingSingleton(t *testing.T) {
 	if profiler := Default(); profiler != nil {
 		_ = profiler.Close()
 	}
-	first := New(http.NewServeMux())
+	first := New(http.NewServeMux(), WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = first.Close() })
-	second := New(http.NewServeMux(), WithBasePath("/ignored"))
+	second := New(http.NewServeMux(), WithBasePath("/ignored"), WithUnsafeUnauthenticatedAccess())
 	if second != first || second.BasePath() != defaultBasePath {
 		t.Fatalf("first = %p, second = %p, path = %q", first, second, second.BasePath())
 	}
@@ -73,7 +83,7 @@ func TestConcurrentStartReturnsOneProfiler(t *testing.T) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			profiler, err := Start("127.0.0.1:0")
+			profiler, err := Start("127.0.0.1:0", WithUnsafeUnauthenticatedAccess())
 			profilers <- profiler
 			errors <- err
 		}()

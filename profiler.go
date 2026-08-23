@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -39,22 +40,38 @@ func New(router Router, options ...Option) *Profiler {
 	if router == nil {
 		panic("webpprof: nil router")
 	}
-	profiler := newProfiler(options...)
+	configuration := configFromOptions(options...)
+	profiler := newProfilerWithConfig(configuration)
 	profiler.register(router)
 	defaultProfiler.Store(profiler)
 	return profiler
 }
 
 func newProfiler(options ...Option) *Profiler {
+	return newProfilerWithConfig(configFromOptions(options...))
+}
+
+func configFromOptions(options ...Option) config {
 	c := defaultConfig()
 	for _, option := range options {
 		if option != nil {
 			option(&c)
 		}
 	}
+	return c
+}
+
+func newProfilerWithConfig(c config) *Profiler {
 	profiler := &Profiler{config: c, store: newEntryStore(c), startedAt: time.Now().UTC(), sessionToken: newID(), loginFailures: make(map[string]loginFailure)}
 	profiler.requestRemaining.Store(c.requestLimit)
 	return profiler
+}
+
+func validateAuthentication(c config) error {
+	if c.token == "" && !c.unsafeNoAuth {
+		return errors.New("webpprof: authentication is required; configure WithToken or explicitly opt in with WithUnsafeUnauthenticatedAccess")
+	}
+	return nil
 }
 
 func NewIf(enabled bool, router Router, options ...Option) *Profiler {

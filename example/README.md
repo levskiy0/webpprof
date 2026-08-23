@@ -38,11 +38,17 @@ dependencies, wraps each boundary once, and then runs its normal handlers:
 baseLogHandler := slog.NewJSONHandler(os.Stdout, nil)
 baseSQLiteDriver := driver.Driver(&modernsqlite.Driver{})
 
+profilerStore, err := webpprofsqlite.Open(context.Background(), "./var/webpprof/events.db")
+if err != nil {
+    return err
+}
+
 // Connect webpprof.
 profiler := webpprof.New(
     mux,
+	webpprof.WithUnsafeUnauthenticatedAccess(),
     webpprof.WithMaxEvents(25_000),
-    webpprof.WithSQLiteStorage("./var/webpprof/events.db"),
+	webpprof.WithStorage(profilerStore),
 )
 defer profiler.Close()
 
@@ -137,10 +143,11 @@ profiler entities:
 - `log/slog` writes JSON logs to stdout through the webpprof slog handler;
 - `profiler/sql` records the actual SQL duration, error, callsite, and SQLite
   `EXPLAIN QUERY PLAN` result;
-- `WithSQLiteStorage` keeps captured profiler events across restarts.
+- the optional `storage/sqlite` module keeps captured profiler events across
+  restarts.
 
 The only non-webpprof dependency is `modernc.org/sqlite`, the pure-Go SQLite
-driver used by both the application and the profiler storage backend. No Gin,
+driver used by both the application and the optional profiler storage backend. No Gin,
 ORM, logging framework, Redis, SMTP, queue, external database, or CGO toolchain
 is required.
 
@@ -191,16 +198,22 @@ Restart `go run ./example` after changing Go or embedded UI files. Stop it with
 
 ### SQLite profiler storage
 
-The example uses the same public option available to applications:
+The example uses the independent SQLite storage module available to
+applications:
 
 ```go
+profilerStore, err := webpprofsqlite.Open(context.Background(), "./var/webpprof/events.db")
+if err != nil {
+    return err
+}
 profiler := webpprof.New(
     mux,
+	webpprof.WithUnsafeUnauthenticatedAccess(),
     webpprof.WithRetention(2*time.Hour),
     webpprof.WithMaxEvents(25_000),
     webpprof.WithMaxBytes(128<<20),
     webpprof.WithBodyLimit(32<<10),
-    webpprof.WithSQLiteStorage("./var/webpprof/events.db"),
+	webpprof.WithStorage(profilerStore),
 )
 ```
 

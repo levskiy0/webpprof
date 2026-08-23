@@ -26,7 +26,7 @@ func (c *clientStub) QueueSubscribe(_, _ string, handler natslibrary.MsgHandler)
 
 func TestPublishContextCorrelatesAndDoesNotCapturePayload(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	client := ProfileWith(profiler, &clientStub{})
 	capture := profiler.BeginRequest(webpprof.Request{Method: http.MethodPost, Path: "/players"})

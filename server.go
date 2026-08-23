@@ -24,6 +24,11 @@ func Start(addr string, options ...Option) (*Profiler, error) {
 		defaultProfilerMu.Unlock()
 		return nil, errors.New("webpprof: listen address is required")
 	}
+	configuration := configFromOptions(options...)
+	if err := validateAuthentication(configuration); err != nil {
+		defaultProfilerMu.Unlock()
+		return nil, err
+	}
 
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -31,7 +36,7 @@ func Start(addr string, options ...Option) (*Profiler, error) {
 		return nil, fmt.Errorf("webpprof: listen on %s: %w", addr, err)
 	}
 	mux := http.NewServeMux()
-	profiler := newProfiler(options...)
+	profiler := newProfilerWithConfig(configuration)
 	profiler.register(mux)
 	server := &http.Server{
 		Addr:              addr,

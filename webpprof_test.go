@@ -21,6 +21,25 @@ type queueStatsSourceStub struct {
 	stats QueueStats
 }
 
+type blockingEntryStorage struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (*blockingEntryStorage) Name() string { return "blocking" }
+func (*blockingEntryStorage) Load(context.Context) ([]Entry, uint64, error) {
+	return nil, 0, nil
+}
+func (s *blockingEntryStorage) Put(context.Context, Entry, uint64) error {
+	s.once.Do(func() { close(s.started) })
+	<-s.release
+	return nil
+}
+func (*blockingEntryStorage) Delete(context.Context, string) error { return nil }
+func (*blockingEntryStorage) Clear(context.Context, uint64) error  { return nil }
+func (*blockingEntryStorage) Close() error                         { return nil }
+
 func (s queueStatsSourceStub) QueueStats(context.Context) (QueueStats, error) {
 	return s.stats, nil
 }
@@ -43,7 +62,7 @@ func TestNewIfDisabledDoesNotInitializeProfiler(t *testing.T) {
 
 func TestProfilerLogsRequestAndChildren(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := New(mux)
+	profiler := New(mux, WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	profiler.LogRequest(Request{
 		Meta:        Meta{ID: "request-1", StartedAt: time.Now(), Duration: 10 * time.Millisecond},
@@ -88,7 +107,7 @@ func TestProfilerLogsRequestAndChildren(t *testing.T) {
 }
 
 func TestContextTagsAreInheritedAndEntityTagsOverrideThem(t *testing.T) {
-	profiler := New(http.NewServeMux())
+	profiler := New(http.NewServeMux(), WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	capture := profiler.BeginRequest(Request{Meta: Meta{ID: "tagged-request"}, Method: http.MethodGet, Path: "/players"})
 	ctx := WithRequest(context.Background(), capture)
@@ -128,7 +147,7 @@ func TestContextTagsAreInheritedAndEntityTagsOverrideThem(t *testing.T) {
 
 func TestProfilerFiltersEventsByAllRequestedTags(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := New(mux)
+	profiler := New(mux, WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	profiler.LogEvent(Event{Meta: Meta{ID: "acme-prod", Tags: map[string]string{"tenant": "acme", "environment": "prod"}}, Kind: "deploy", Name: "one"})
 	profiler.LogEvent(Event{Meta: Meta{ID: "acme-dev", Tags: map[string]string{"tenant": "acme", "environment": "dev"}}, Kind: "deploy", Name: "two"})
@@ -255,6 +274,34 @@ func TestProfilerRequiresSessionToken(t *testing.T) {
 	}
 }
 
+func TestProfilerRequiresExplicitUnauthenticatedOptIn(t *testing.T) {
+	mux := http.NewServeMux()
+	profiler := New(mux)
+
+	for _, request := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "/debug/webpprof/api/events", nil),
+		httptest.NewRequest(http.MethodPost, "/debug/webpprof/session", nil),
+	} {
+		blocked := httptest.NewRecorder()
+		mux.ServeHTTP(blocked, request)
+		if blocked.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s blocked status = %d", request.URL.Path, blocked.Code)
+		}
+	}
+	if err := profiler.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	mux = http.NewServeMux()
+	profiler = New(mux, WithUnsafeUnauthenticatedAccess())
+	t.Cleanup(func() { _ = profiler.Close() })
+	allowed := httptest.NewRecorder()
+	mux.ServeHTTP(allowed, httptest.NewRequest(http.MethodGet, "/debug/webpprof/api/events", nil))
+	if allowed.Code != http.StatusOK {
+		t.Fatalf("unsafe opt-in status = %d", allowed.Code)
+	}
+}
+
 func TestProfilerRateLimitsFailedLogins(t *testing.T) {
 	mux := http.NewServeMux()
 	profiler := New(mux, WithToken("profile-secret"))
@@ -278,7 +325,7 @@ func TestProfilerRateLimitsFailedLogins(t *testing.T) {
 }
 
 func TestCaptureControlsDisableKindsAndRequestSampling(t *testing.T) {
-	profiler := New(http.NewServeMux(), WithRequestSampleRate(0), WithDisabledKinds(KindQuery, KindLog), WithBodyLimit(2048))
+	profiler := New(http.NewServeMux(), WithUnsafeUnauthenticatedAccess(), WithRequestSampleRate(0), WithDisabledKinds(KindQuery, KindLog), WithBodyLimit(2048))
 	t.Cleanup(func() { _ = profiler.Close() })
 	if profiler.ShouldCaptureRequest(httptest.NewRequest(http.MethodGet, "/players", nil)) {
 		t.Fatal("zero sample rate captured a request")
@@ -298,7 +345,7 @@ func TestCaptureControlsDisableKindsAndRequestSampling(t *testing.T) {
 }
 
 func TestStoreEvictsAndUpdatesEntries(t *testing.T) {
-	profiler := New(http.NewServeMux(), WithMaxEvents(2))
+	profiler := New(http.NewServeMux(), WithUnsafeUnauthenticatedAccess(), WithMaxEvents(2))
 	t.Cleanup(func() { _ = profiler.Close() })
 	profiler.LogJob(Job{Meta: Meta{ID: "job-1"}, Name: "first", State: "running"})
 	profiler.LogJob(Job{Meta: Meta{ID: "job-2"}, Name: "second"})
@@ -315,13 +362,13 @@ func TestStoreEvictsAndUpdatesEntries(t *testing.T) {
 
 func TestStorageJournalSurvivesRestart(t *testing.T) {
 	storagePath := filepath.Join(t.TempDir(), "webpprof.jsonl")
-	first := New(http.NewServeMux(), WithStoragePath(storagePath))
+	first := New(http.NewServeMux(), WithUnsafeUnauthenticatedAccess(), WithStoragePath(storagePath))
 	first.LogQuery(Query{Meta: Meta{ID: "persistent-query", Tags: map[string]string{"tenant": "acme"}}, SQL: "SELECT 1"})
 	if err := first.Close(); err != nil {
 		t.Fatalf("close first profiler: %v", err)
 	}
 
-	second := New(http.NewServeMux(), WithStoragePath(storagePath))
+	second := New(http.NewServeMux(), WithUnsafeUnauthenticatedAccess(), WithStoragePath(storagePath))
 	t.Cleanup(func() { _ = second.Close() })
 	entry, ok := second.store.get("persistent-query")
 	if !ok || entry.Tags["tenant"] != "acme" || !strings.Contains(string(entry.Data), "SELECT 1") {
@@ -337,92 +384,6 @@ func TestStorageJournalSurvivesRestart(t *testing.T) {
 	}
 	if info.Mode().Perm()&0o077 != 0 {
 		t.Fatalf("journal permissions = %o, want owner-only", info.Mode().Perm())
-	}
-}
-
-func TestSQLiteStorageSurvivesRestartAndPreservesCursor(t *testing.T) {
-	storagePath := filepath.Join(t.TempDir(), "webpprof.db")
-	first := New(http.NewServeMux(), WithSQLiteStorage(storagePath))
-	first.LogQuery(Query{Meta: Meta{ID: "persistent-query", Tags: map[string]string{"tenant": "acme"}}, SQL: "SELECT 1"})
-	firstCursor := first.store.stats().Cursor
-	first.store.clear()
-	clearedCursor := first.store.stats().Cursor
-	first.LogEvent(Event{Meta: Meta{ID: "persistent-event"}, Kind: "test", Name: "created-after-clear"})
-	lastCursor := first.store.stats().Cursor
-	if err := first.Close(); err != nil {
-		t.Fatalf("close first profiler: %v", err)
-	}
-
-	second := New(http.NewServeMux(), WithSQLiteStorage(storagePath))
-	t.Cleanup(func() { _ = second.Close() })
-	if _, ok := second.store.get("persistent-query"); ok {
-		t.Fatal("entry removed by clear was restored from SQLite")
-	}
-	entry, ok := second.store.get("persistent-event")
-	if !ok || entry.Tags["tenant"] != "" || !strings.Contains(string(entry.Data), "created-after-clear") {
-		t.Fatalf("restored entry = %+v, found = %v", entry, ok)
-	}
-	stats := second.store.stats()
-	if stats.Storage != "sqlite" || stats.Events != 1 || stats.StorageError != "" || stats.Cursor != lastCursor {
-		t.Fatalf("sqlite storage stats = %+v", stats)
-	}
-	if !(firstCursor < clearedCursor && clearedCursor < lastCursor) {
-		t.Fatalf("sqlite cursors did not advance across clear: first=%d clear=%d last=%d", firstCursor, clearedCursor, lastCursor)
-	}
-	info, err := os.Stat(storagePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		t.Fatalf("sqlite permissions = %o, want owner-only", info.Mode().Perm())
-	}
-}
-
-func TestSQLiteStoragePersistsFIFOEviction(t *testing.T) {
-	storagePath := filepath.Join(t.TempDir(), "webpprof.db")
-	first := New(http.NewServeMux(), WithSQLiteStorage(storagePath), WithMaxEvents(2))
-	for index := 1; index <= 3; index++ {
-		first.LogEvent(Event{Meta: Meta{ID: fmt.Sprintf("event-%d", index)}, Kind: "fifo", Name: "recorded"})
-	}
-	if err := first.Close(); err != nil {
-		t.Fatalf("close first profiler: %v", err)
-	}
-
-	second := New(http.NewServeMux(), WithSQLiteStorage(storagePath), WithMaxEvents(2))
-	t.Cleanup(func() { _ = second.Close() })
-	if _, ok := second.store.get("event-1"); ok {
-		t.Fatal("oldest SQLite entry survived FIFO eviction")
-	}
-	for _, id := range []string{"event-2", "event-3"} {
-		if _, ok := second.store.get(id); !ok {
-			t.Fatalf("retained SQLite entry %q was not restored", id)
-		}
-	}
-	if stats := second.store.stats(); stats.Events != 2 || stats.StorageError != "" {
-		t.Fatalf("sqlite FIFO stats = %+v", stats)
-	}
-}
-
-func TestSQLiteStoragePersistsRetentionPruning(t *testing.T) {
-	storagePath := filepath.Join(t.TempDir(), "webpprof.db")
-	first := newProfiler(WithSQLiteStorage(storagePath), WithRetention(24*time.Hour))
-	first.store.put(Entry{ID: "expired", Kind: KindEvent, RecordedAt: time.Now().Add(-2 * time.Hour), Data: json.RawMessage(`{"kind":"test"}`)})
-	first.store.put(Entry{ID: "fresh", Kind: KindEvent, RecordedAt: time.Now(), Data: json.RawMessage(`{"kind":"test"}`)})
-	first.store.close()
-
-	second := newProfiler(WithSQLiteStorage(storagePath), WithRetention(time.Hour))
-	if _, ok := second.store.get("expired"); ok {
-		t.Fatal("expired SQLite entry was restored")
-	}
-	if _, ok := second.store.get("fresh"); !ok {
-		t.Fatal("fresh SQLite entry was not restored")
-	}
-	second.store.close()
-
-	third := newProfiler(WithSQLiteStorage(storagePath), WithRetention(24*time.Hour))
-	t.Cleanup(third.store.close)
-	if _, ok := third.store.get("expired"); ok {
-		t.Fatal("retention-pruned SQLite entry reappeared after another restart")
 	}
 }
 
@@ -442,10 +403,6 @@ func TestStoreCountsTagsTowardMaxBytes(t *testing.T) {
 func TestStorageOptionLastWins(t *testing.T) {
 	configuration := defaultConfig()
 	WithStoragePath("events.jsonl")(&configuration)
-	WithSQLiteStorage("events.db")(&configuration)
-	if configuration.storageKind != storageKindSQLite || configuration.storagePath != "events.db" {
-		t.Fatalf("sqlite storage config = kind %q path %q", configuration.storageKind, configuration.storagePath)
-	}
 	WithStoragePath("")(&configuration)
 	if configuration.storageKind != storageKindMemory || configuration.storagePath != "" {
 		t.Fatalf("memory storage config = kind %q path %q", configuration.storageKind, configuration.storagePath)
@@ -454,7 +411,7 @@ func TestStorageOptionLastWins(t *testing.T) {
 
 func TestEventsEndpointPaginatesOlderEntries(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := New(mux)
+	profiler := New(mux, WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	for index := range 5 {
 		profiler.LogEvent(Event{Meta: Meta{ID: "event-" + string(rune('a'+index))}, Kind: "page", Name: "event"})
@@ -487,6 +444,32 @@ func TestEventsEndpointPaginatesOlderEntries(t *testing.T) {
 	}
 }
 
+func TestEventsEndpointAppliesRequestFiltersBeforeLimit(t *testing.T) {
+	mux := http.NewServeMux()
+	profiler := New(mux, WithUnsafeUnauthenticatedAccess())
+	t.Cleanup(func() { _ = profiler.Close() })
+
+	profiler.LogRequest(Request{Meta: Meta{ID: "match", Duration: 750 * time.Millisecond, Tags: map[string]string{"tenant": "acme"}}, Method: http.MethodPost, Path: "/orders/needle", Status: http.StatusInternalServerError})
+	for index := range 5 {
+		profiler.LogRequest(Request{Meta: Meta{ID: fmt.Sprintf("newer-%d", index), Duration: 10 * time.Millisecond}, Method: http.MethodGet, Path: "/health", Status: http.StatusOK})
+	}
+
+	response := httptest.NewRecorder()
+	target := "/debug/webpprof/api/events?kind=request&method=post&path_contains=orders&status=500&min_duration_ms=700&max_duration_ms=800&tag=tenant%3Dacme&q=needle&limit=1"
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
+	var payload struct {
+		Events  []Entry `json:"events"`
+		Scanned int     `json:"scanned"`
+		HasMore bool    `json:"has_more"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Events) != 1 || payload.Events[0].ID != "match" || payload.Scanned != 6 || payload.HasMore {
+		t.Fatalf("filtered page = %+v", payload)
+	}
+}
+
 func TestRequestCaptureIsConcurrentAndFinishesOnce(t *testing.T) {
 	profiler := New(http.NewServeMux())
 	t.Cleanup(func() { _ = profiler.Close() })
@@ -513,7 +496,7 @@ func TestRequestCaptureIsConcurrentAndFinishesOnce(t *testing.T) {
 
 func TestWebSocketReceivesLiveEvent(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := New(mux)
+	profiler := New(mux, WithUnsafeUnauthenticatedAccess())
 	profiler.RegisterQueueStats(queueStatsSourceStub{stats: QueueStats{Pending: 3}}, "jobs")
 	t.Cleanup(func() { _ = profiler.Close() })
 	server := httptest.NewServer(mux)
@@ -544,7 +527,7 @@ func TestWebSocketReceivesLiveEvent(t *testing.T) {
 
 func TestWebSocketStreamsStats(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := New(mux)
+	profiler := New(mux, WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
@@ -642,23 +625,136 @@ func TestEntryStoreConcurrentLoad(t *testing.T) {
 	}
 }
 
+func TestEntryStoreDoesNotHoldMainMutexDuringPersistence(t *testing.T) {
+	storage := &blockingEntryStorage{started: make(chan struct{}), release: make(chan struct{})}
+	configuration := defaultConfig()
+	WithStorage(storage)(&configuration)
+	store := newEntryStore(configuration)
+	t.Cleanup(store.close)
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(storage.release) }) })
+
+	putDone := make(chan bool, 1)
+	go func() {
+		putDone <- store.put(Entry{ID: "blocked", Kind: KindEvent, RecordedAt: time.Now(), Data: json.RawMessage(`{"kind":"test"}`)})
+	}()
+	<-storage.started
+
+	statsDone := make(chan Stats, 1)
+	go func() { statsDone <- store.stats() }()
+	select {
+	case stats := <-statsDone:
+		if stats.Events != 1 {
+			t.Fatalf("stats while persistence blocked = %+v", stats)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("store mutex remained locked during persistence")
+	}
+
+	releaseOnce.Do(func() { close(storage.release) })
+	if ok := <-putDone; !ok {
+		t.Fatal("put failed")
+	}
+}
+
 func BenchmarkEntryStorePutAndList(b *testing.B) {
 	configuration := defaultConfig()
-	configuration.maxEvents = max(configuration.maxEvents, b.N)
 	store := newEntryStore(configuration)
 	b.Cleanup(store.close)
 	b.ReportAllocs()
-	for index := 0; index < b.N; index++ {
+	index := 0
+	for b.Loop() {
 		store.put(Entry{ID: fmt.Sprintf("benchmark-%d", index), Kind: KindEvent, RecordedAt: time.Now(), StartedAt: time.Now(), Data: json.RawMessage(`{"kind":"benchmark","name":"event"}`)})
 		if index%100 == 0 {
 			_ = store.list(KindEvent, "", nil, 0, 100)
 		}
+		index++
+	}
+}
+
+func BenchmarkEntryStoreSteadyStateEviction(b *testing.B) {
+	configuration := defaultConfig()
+	store := newEntryStore(configuration)
+	b.Cleanup(store.close)
+
+	entries := make([]Entry, configuration.maxEvents+1)
+	recordedAt := time.Now()
+	for index := range entries {
+		entries[index] = Entry{
+			ID:         fmt.Sprintf("benchmark-%d", index),
+			Kind:       KindEvent,
+			RecordedAt: recordedAt,
+			StartedAt:  recordedAt,
+			Data:       json.RawMessage(`{"kind":"benchmark","name":"event"}`),
+		}
+	}
+	for index := 0; index < configuration.maxEvents; index++ {
+		store.put(entries[index])
+	}
+
+	b.ReportAllocs()
+	index := configuration.maxEvents
+	for b.Loop() {
+		store.put(entries[index])
+		index++
+		if index == len(entries) {
+			index = 0
+		}
+	}
+}
+
+func BenchmarkProfilerOverhead(b *testing.B) {
+	events := make([]Event, defaultMaxEvents+1)
+	startedAt := time.Now()
+	for index := range events {
+		events[index] = Event{
+			Meta: Meta{ID: fmt.Sprintf("benchmark-%d", index), StartedAt: startedAt},
+			Kind: "benchmark",
+			Name: "event",
+		}
+	}
+
+	b.Run("disabled_kind", func(b *testing.B) {
+		profiler := newProfiler(WithDisabledKinds(KindEvent))
+		b.Cleanup(profiler.store.close)
+		b.ReportAllocs()
+		for b.Loop() {
+			profiler.LogEvent(events[0])
+		}
+	})
+
+	for _, benchmark := range []struct {
+		name    string
+		options func(*testing.B) []Option
+	}{
+		{name: "memory_steady_state_eviction", options: func(*testing.B) []Option { return nil }},
+		{name: "journal_steady_state_eviction", options: func(b *testing.B) []Option {
+			return []Option{WithStoragePath(filepath.Join(b.TempDir(), "events.jsonl"))}
+		}},
+	} {
+		b.Run(benchmark.name, func(b *testing.B) {
+			profiler := newProfiler(benchmark.options(b)...)
+			b.Cleanup(profiler.store.close)
+			for index := 0; index < defaultMaxEvents; index++ {
+				profiler.LogEvent(events[index])
+			}
+
+			b.ReportAllocs()
+			index := defaultMaxEvents
+			for b.Loop() {
+				profiler.LogEvent(events[index])
+				index++
+				if index == len(events) {
+					index = 0
+				}
+			}
+		})
 	}
 }
 
 func TestProfilerServesRuntimeStats(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := New(mux)
+	profiler := New(mux, WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/debug/webpprof/api/runtime", nil))
@@ -676,7 +772,7 @@ func TestProfilerServesRuntimeStats(t *testing.T) {
 
 func TestProfilerServesRegisteredQueueStats(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := New(mux)
+	profiler := New(mux, WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	profiler.RegisterQueueStats(queueStatsSourceStub{stats: QueueStats{WorkersActive: 2, WorkersTotal: 5, Pending: 7, Processed: 11, Queues: []QueueState{{Name: "mail", WorkersActive: 2, WorkersTotal: 3, Pending: 7}}}}, "primary")
 	profiler.RegisterQueueStats(queueStatsSourceStub{stats: QueueStats{WorkersActive: 1, WorkersTotal: 4, Pending: 6, Processed: 12, Queues: []QueueState{{Name: "mail", WorkersActive: 1, WorkersTotal: 4, Pending: 6}}}}, "primary")
@@ -699,7 +795,7 @@ func TestProfilerServesRegisteredQueueStats(t *testing.T) {
 }
 
 func TestQueueStatsAppliesProviderDeadline(t *testing.T) {
-	profiler := New(http.NewServeMux(), WithQueueStatsTimeout(20*time.Millisecond))
+	profiler := New(http.NewServeMux(), WithUnsafeUnauthenticatedAccess(), WithQueueStatsTimeout(20*time.Millisecond))
 	t.Cleanup(func() { _ = profiler.Close() })
 	profiler.RegisterQueueStats(QueueStatsSourceFunc(func(ctx context.Context) (QueueStats, error) {
 		<-ctx.Done()

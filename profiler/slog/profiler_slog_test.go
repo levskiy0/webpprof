@@ -15,7 +15,7 @@ import (
 
 func TestProfilerSlogRecordsFieldsAndPreservesHandler(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	handler := stdlibslog.NewTextHandler(io.Discard, nil)
 	profiled := ProfileWith(profiler, handler)

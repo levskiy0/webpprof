@@ -162,6 +162,24 @@ func (c *Client) ListEvents(ctx context.Context, options ListEventsOptions) (Eve
 			query.Add("tag", tag)
 		}
 	}
+	if strings.TrimSpace(options.Query) != "" {
+		query.Set("q", strings.TrimSpace(options.Query))
+	}
+	if strings.TrimSpace(options.Method) != "" {
+		query.Set("method", strings.TrimSpace(options.Method))
+	}
+	if strings.TrimSpace(options.PathContains) != "" {
+		query.Set("path_contains", strings.TrimSpace(options.PathContains))
+	}
+	if options.Status != 0 {
+		query.Set("status", strconv.Itoa(options.Status))
+	}
+	if options.MinDuration > 0 {
+		query.Set("min_duration_ms", strconv.FormatFloat(float64(options.MinDuration)/float64(time.Millisecond), 'f', -1, 64))
+	}
+	if options.MaxDuration > 0 {
+		query.Set("max_duration_ms", strconv.FormatFloat(float64(options.MaxDuration)/float64(time.Millisecond), 'f', -1, 64))
+	}
 	if options.After > 0 {
 		query.Set("after", strconv.FormatUint(options.After, 10))
 	}
@@ -254,7 +272,7 @@ func (c *Client) WaitForRequest(ctx context.Context, options WaitForRequestOptio
 	cursor := options.After
 
 	for {
-		page, err := c.ListEvents(ctx, ListEventsOptions{Kind: webpprof.KindRequest, After: cursor, Limit: 200})
+		page, err := c.ListEvents(ctx, ListEventsOptions{Kind: webpprof.KindRequest, After: cursor, Method: options.Method, PathContains: options.PathContains, Status: options.Status, MinDuration: options.MinDuration, MaxDuration: options.MaxDuration, Limit: 200})
 		if err != nil {
 			return RequestSummary{}, fmt.Errorf("webpprof client: wait for request: %w", err)
 		}

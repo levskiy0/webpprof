@@ -1,6 +1,7 @@
 package webpprof
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -26,7 +27,7 @@ type streamMessage struct {
 type entryStore struct {
 	mu             sync.RWMutex
 	entries        map[string]Entry
-	order          []string
+	order          entryOrder
 	bytes          int64
 	nextCursor     uint64
 	dropped        uint64
@@ -41,17 +42,27 @@ type entryStore struct {
 	storageKind    storageKind
 	storagePath    string
 	storageFile    *os.File
-	storageSQLite  *sqliteEntryStorage
+	storage        EntryStorage
 	storageBytes   int64
 	storageError   string
 	bodyLimit      int64
 	requestSample  float64
 	disabledKinds  []Kind
+	storageMu      sync.Mutex
+	storageCond    *sync.Cond
+	storageIssued  uint64
+	storageDone    uint64
 }
 
 type storeJournalRecord struct {
 	Operation string `json:"operation"`
 	Entry     *Entry `json:"entry,omitempty"`
+	Cursor    uint64 `json:"cursor,omitempty"`
+}
+
+type storageBatch struct {
+	sequence uint64
+	records  []storeJournalRecord
 }
 
 func newEntryStore(c config) *entryStore {
@@ -62,7 +73,7 @@ func newEntryStore(c config) *entryStore {
 	slices.Sort(disabledKinds)
 	store := &entryStore{
 		entries:       make(map[string]Entry),
-		order:         make([]string, 0, c.maxEvents),
+		order:         newEntryOrder(c.maxEvents),
 		retention:     c.retention,
 		maxEvents:     c.maxEvents,
 		maxBytes:      c.maxBytes,
@@ -70,25 +81,30 @@ func newEntryStore(c config) *entryStore {
 		subscribers:   make(map[uint64]chan streamMessage),
 		storageKind:   c.storageKind,
 		storagePath:   c.storagePath,
+		storage:       c.storage,
 		bodyLimit:     c.bodyLimit,
 		requestSample: c.requestSample,
 		disabledKinds: disabledKinds,
 	}
+	store.storageCond = sync.NewCond(&store.storageMu)
 	store.openStorage()
 	return store
 }
 
 func (s *entryStore) put(entry Entry) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.isClosed {
+		s.mu.Unlock()
 		return false
 	}
-	s.purgeExpiredLocked(time.Now())
+	records := s.purgeExpiredLocked(time.Now())
 	size := entrySize(entry)
 	if size > s.maxBytes {
 		s.dropped++
 		s.broadcastLocked(streamMessage{Type: "events.dropped", Dropped: s.dropped})
+		batch := s.storageBatchLocked(records)
+		s.mu.Unlock()
+		s.persist(batch)
 		return false
 	}
 	messageType := "event.created"
@@ -102,12 +118,15 @@ func (s *entryStore) put(entry Entry) bool {
 	entry.Data = slices.Clone(entry.Data)
 	entry.Tags = cloneTags(entry.Tags)
 	s.entries[entry.ID] = entry
-	s.order = append(s.order, entry.ID)
+	s.order.pushBack(entry.ID)
 	s.bytes += size
-	s.evictLocked()
-	s.persistLocked(storeJournalRecord{Operation: "put", Entry: &entry})
+	records = append(records, s.evictLocked()...)
+	records = append(records, storeJournalRecord{Operation: "put", Entry: &entry, Cursor: s.nextCursor})
 	copy := cloneEntry(entry)
 	s.broadcastLocked(streamMessage{Type: messageType, Cursor: entry.Cursor, Event: &copy})
+	batch := s.storageBatchLocked(records)
+	s.mu.Unlock()
+	s.persist(batch)
 	return true
 }
 
@@ -116,34 +135,108 @@ func (s *entryStore) list(kind Kind, requestID string, tags []string, after uint
 }
 
 func (s *entryStore) listBefore(kind Kind, requestID string, tags []string, after, before uint64, limit int) []Entry {
+	entries, _ := s.listBeforeFiltered(eventFilters{Kind: kind, RequestID: requestID, Tags: tags, After: after, Before: before}, limit)
+	return entries
+}
+
+type eventFilters struct {
+	Kind          Kind
+	RequestID     string
+	Tags          []string
+	Query         string
+	Method        string
+	PathContains  string
+	Status        int
+	MinDurationNS int64
+	MaxDurationNS int64
+	After         uint64
+	Before        uint64
+}
+
+func (s *entryStore) listBeforeFiltered(filters eventFilters, limit int) ([]Entry, int) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.purgeExpiredLocked(time.Now())
+	records := s.purgeExpiredLocked(time.Now())
 	if limit <= 0 || limit > 1_001 {
 		limit = 200
 	}
-	result := make([]Entry, 0, min(limit, len(s.order)))
-	for index := len(s.order) - 1; index >= 0 && len(result) < limit; index-- {
-		entry := s.entries[s.order[index]]
-		if after > 0 && entry.Cursor <= after {
+	result := make([]Entry, 0, min(limit, s.order.len()))
+	scanned := 0
+	for index := s.order.len() - 1; index >= 0 && len(result) < limit; index-- {
+		entry := s.entries[s.order.at(index)]
+		if filters.After > 0 && entry.Cursor <= filters.After {
 			continue
 		}
-		if before > 0 && entry.Cursor >= before {
+		if filters.Before > 0 && entry.Cursor >= filters.Before {
 			continue
 		}
-		if kind != "" && entry.Kind != kind {
-			continue
-		}
-		if requestID != "" && entry.RequestID != requestID && entry.ID != requestID && entry.OriginRequestID != requestID {
-			continue
-		}
-		if !matchesTags(entry.Tags, tags) {
+		scanned++
+		if !matchesEventFilters(entry, filters) {
 			continue
 		}
 		result = append(result, cloneEntry(entry))
 	}
 	slices.Reverse(result)
-	return result
+	batch := s.storageBatchLocked(records)
+	s.mu.Unlock()
+	s.persist(batch)
+	return result, scanned
+}
+
+func matchesEventFilters(entry Entry, filters eventFilters) bool {
+	if filters.Kind != "" && entry.Kind != filters.Kind {
+		return false
+	}
+	if filters.RequestID != "" && entry.RequestID != filters.RequestID && entry.ID != filters.RequestID && entry.OriginRequestID != filters.RequestID {
+		return false
+	}
+	if !matchesTags(entry.Tags, filters.Tags) {
+		return false
+	}
+	if filters.MinDurationNS > 0 && entry.DurationNS < filters.MinDurationNS {
+		return false
+	}
+	if filters.MaxDurationNS > 0 && entry.DurationNS > filters.MaxDurationNS {
+		return false
+	}
+	query := strings.ToLower(strings.TrimSpace(filters.Query))
+	if query != "" && !entryContains(entry, query) {
+		return false
+	}
+	method := strings.TrimSpace(filters.Method)
+	pathContains := strings.ToLower(strings.TrimSpace(filters.PathContains))
+	if method == "" && pathContains == "" && filters.Status == 0 {
+		return true
+	}
+	if entry.Kind != KindRequest {
+		return false
+	}
+	var request struct {
+		Method string `json:"method"`
+		Path   string `json:"path"`
+		Status int    `json:"status"`
+	}
+	if json.Unmarshal(entry.Data, &request) != nil {
+		return false
+	}
+	if method != "" && !strings.EqualFold(method, request.Method) {
+		return false
+	}
+	if pathContains != "" && !strings.Contains(strings.ToLower(request.Path), pathContains) {
+		return false
+	}
+	return filters.Status == 0 || filters.Status == request.Status
+}
+
+func entryContains(entry Entry, query string) bool {
+	if strings.Contains(strings.ToLower(entry.ID), query) || strings.Contains(strings.ToLower(string(entry.Kind)), query) || strings.Contains(strings.ToLower(entry.RequestID), query) || strings.Contains(strings.ToLower(entry.Process), query) || strings.Contains(strings.ToLower(entry.Instance), query) || strings.Contains(strings.ToLower(string(entry.Data)), query) {
+		return true
+	}
+	for key, value := range entry.Tags {
+		if strings.Contains(strings.ToLower(key), query) || strings.Contains(strings.ToLower(value), query) {
+			return true
+		}
+	}
+	return false
 }
 
 func matchesTags(tags map[string]string, filters []string) bool {
@@ -167,51 +260,62 @@ func matchesTags(tags map[string]string, filters []string) bool {
 
 func (s *entryStore) get(id string) (Entry, bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.purgeExpiredLocked(time.Now())
+	records := s.purgeExpiredLocked(time.Now())
 	entry, ok := s.entries[id]
-	return cloneEntry(entry), ok
+	result := cloneEntry(entry)
+	batch := s.storageBatchLocked(records)
+	s.mu.Unlock()
+	s.persist(batch)
+	return result, ok
 }
 
 func (s *entryStore) requestEntries(requestID string) (Entry, []Entry, bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.purgeExpiredLocked(time.Now())
+	records := s.purgeExpiredLocked(time.Now())
 	request, ok := s.entries[requestID]
 	if !ok {
+		batch := s.storageBatchLocked(records)
+		s.mu.Unlock()
+		s.persist(batch)
 		return Entry{}, nil, false
 	}
 	entries := make([]Entry, 0)
-	for _, id := range s.order {
+	for index := 0; index < s.order.len(); index++ {
+		id := s.order.at(index)
 		entry := s.entries[id]
 		if entry.ID != requestID && entry.RequestID != requestID && entry.OriginRequestID != requestID {
 			continue
 		}
 		entries = append(entries, cloneEntry(entry))
 	}
-	return cloneEntry(request), entries, true
+	result := cloneEntry(request)
+	batch := s.storageBatchLocked(records)
+	s.mu.Unlock()
+	s.persist(batch)
+	return result, entries, true
 }
 
 func (s *entryStore) clear() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.entries = make(map[string]Entry)
-	s.order = s.order[:0]
+	s.order.reset()
 	s.bytes = 0
 	s.nextCursor++
-	s.persistLocked(storeJournalRecord{Operation: "clear"})
-	if s.storageKind == storageKindJournal {
-		s.compactJournalLocked()
-	}
 	s.broadcastLocked(streamMessage{Type: "events.cleared", Cursor: s.nextCursor})
+	batch := s.storageBatchLocked([]storeJournalRecord{{Operation: "clear", Cursor: s.nextCursor}})
+	s.mu.Unlock()
+	s.persist(batch)
 }
 
 func (s *entryStore) stats() Stats {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.purgeExpiredLocked(time.Now())
+	records := s.purgeExpiredLocked(time.Now())
 	storage := string(s.storageKind)
-	return Stats{Events: len(s.entries), Bytes: s.bytes, DroppedEvents: s.dropped, EvictedEvents: s.evicted, Subscribers: len(s.subscribers), Cursor: s.nextCursor, MaxEvents: s.maxEvents, MaxBytes: s.maxBytes, RetentionNS: int64(s.retention), Storage: storage, StorageError: s.storageError, BodyLimit: s.bodyLimit, SampleRate: s.requestSample, DisabledKinds: slices.Clone(s.disabledKinds)}
+	stats := Stats{Events: len(s.entries), Bytes: s.bytes, DroppedEvents: s.dropped, EvictedEvents: s.evicted, Subscribers: len(s.subscribers), Cursor: s.nextCursor, MaxEvents: s.maxEvents, MaxBytes: s.maxBytes, RetentionNS: int64(s.retention), Storage: storage, StorageError: s.storageError, BodyLimit: s.bodyLimit, SampleRate: s.requestSample, DisabledKinds: slices.Clone(s.disabledKinds)}
+	batch := s.storageBatchLocked(records)
+	s.mu.Unlock()
+	s.persist(batch)
+	return stats
 }
 
 func (s *entryStore) subscribe() (<-chan streamMessage, func()) {
@@ -241,64 +345,106 @@ func (s *entryStore) subscribe() (<-chan streamMessage, func()) {
 
 func (s *entryStore) close() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.isClosed {
+		s.mu.Unlock()
 		return
 	}
 	s.isClosed = true
-	if s.storageFile != nil {
-		if err := s.storageFile.Sync(); err != nil && s.storageError == "" {
-			s.storageError = err.Error()
-		}
-		if err := s.storageFile.Close(); err != nil && s.storageError == "" {
-			s.storageError = err.Error()
-		}
-		s.storageFile = nil
-	}
-	if s.storageSQLite != nil {
-		if err := s.storageSQLite.close(); err != nil && s.storageError == "" {
-			s.storageError = err.Error()
-		}
-		s.storageSQLite = nil
-	}
+	issued := s.storageIssued
 	for id, subscriber := range s.subscribers {
 		delete(s.subscribers, id)
 		close(subscriber)
 	}
+	s.mu.Unlock()
+
+	s.storageMu.Lock()
+	for s.storageDone < issued {
+		s.storageCond.Wait()
+	}
+	var storageErr error
+	if s.storageFile != nil {
+		if err := s.storageFile.Sync(); err != nil {
+			storageErr = errors.Join(storageErr, err)
+		}
+		if err := s.storageFile.Close(); err != nil {
+			storageErr = errors.Join(storageErr, err)
+		}
+		s.storageFile = nil
+	}
+	if s.storage != nil {
+		if err := s.storage.Close(); err != nil {
+			storageErr = errors.Join(storageErr, err)
+		}
+		s.storage = nil
+	}
+	s.storageMu.Unlock()
+	s.setStorageError(storageErr)
 }
 
-func (s *entryStore) purgeExpiredLocked(now time.Time) {
+func (s *entryStore) purgeExpiredLocked(now time.Time) []storeJournalRecord {
+	var records []storeJournalRecord
 	cutoff := now.Add(-s.retention)
-	for len(s.order) > 0 {
-		id := s.order[0]
+	for s.order.len() > 0 {
+		id, _ := s.order.front()
 		entry := s.entries[id]
 		if !entry.RecordedAt.Before(cutoff) {
 			break
 		}
-		s.removeLocked(id)
+		if record, ok := s.removeOldestLocked(); ok {
+			records = append(records, record)
+		}
 		s.evicted++
 	}
+	return records
 }
 
-func (s *entryStore) evictLocked() {
-	for len(s.order) > s.maxEvents || s.bytes > s.maxBytes {
-		if len(s.order) == 0 {
-			return
+func (s *entryStore) evictLocked() []storeJournalRecord {
+	var records []storeJournalRecord
+	for s.order.len() > s.maxEvents || s.bytes > s.maxBytes {
+		if s.order.len() == 0 {
+			break
 		}
-		s.removeLocked(s.order[0])
+		if record, ok := s.removeOldestLocked(); ok {
+			records = append(records, record)
+		}
 		s.evicted++
 	}
+	return records
 }
 
 func (s *entryStore) openStorage() {
-	if s.storagePath == "" || s.storageKind == storageKindMemory {
+	if s.storageKind == storageKindMemory {
 		return
 	}
-	if s.storageKind == storageKindSQLite {
-		s.openSQLiteStorage()
+	if s.storage != nil {
+		s.openExternalStorage()
+		return
+	}
+	if s.storagePath == "" {
 		return
 	}
 	s.openJournalStorage()
+}
+
+func (s *entryStore) openExternalStorage() {
+	entries, cursor, err := s.storage.Load(context.Background())
+	for _, entry := range entries {
+		copy := entry
+		s.replayRecord(storeJournalRecord{Operation: "put", Entry: &copy})
+	}
+	if cursor > s.nextCursor {
+		s.nextCursor = cursor
+	}
+	if err != nil {
+		s.storageError = err.Error()
+	}
+	records := s.purgeExpiredLocked(time.Now())
+	records = append(records, s.evictLocked()...)
+	for _, record := range records {
+		if persistErr := s.persistRecord(record); persistErr != nil {
+			s.storageError = persistErr.Error()
+		}
+	}
 }
 
 func (s *entryStore) openJournalStorage() {
@@ -347,7 +493,7 @@ func (s *entryStore) openJournalStorage() {
 func (s *entryStore) replayRecord(record storeJournalRecord) {
 	if record.Operation == "clear" {
 		s.entries = make(map[string]Entry)
-		s.order = s.order[:0]
+		s.order.reset()
 		s.bytes = 0
 		return
 	}
@@ -364,107 +510,108 @@ func (s *entryStore) replayRecord(record storeJournalRecord) {
 		s.removeOrderLocked(entry.ID)
 	}
 	s.entries[entry.ID] = entry
-	s.order = append(s.order, entry.ID)
+	s.order.pushBack(entry.ID)
 	s.bytes += entrySize(entry)
 	if entry.Cursor > s.nextCursor {
 		s.nextCursor = entry.Cursor
 	}
 }
 
-func (s *entryStore) persistLocked(record storeJournalRecord) {
+func (s *entryStore) persistRecord(record storeJournalRecord) error {
 	switch s.storageKind {
 	case storageKindJournal:
-		s.appendJournalLocked(record)
-	case storageKindSQLite:
-		if s.storageSQLite == nil {
-			return
+		if err := s.appendJournal(record); err != nil {
+			return err
 		}
-		var err error
+		if record.Operation == "clear" {
+			return s.compactJournal()
+		}
+	default:
+		if s.storage == nil {
+			return nil
+		}
 		switch record.Operation {
 		case "put":
 			if record.Entry != nil {
-				err = s.storageSQLite.put(*record.Entry, s.nextCursor)
+				return s.storage.Put(context.Background(), *record.Entry, record.Cursor)
 			}
 		case "delete":
 			if record.Entry != nil {
-				err = s.storageSQLite.delete(record.Entry.ID)
+				return s.storage.Delete(context.Background(), record.Entry.ID)
 			}
 		case "clear":
-			err = s.storageSQLite.clear(s.nextCursor)
-		}
-		if err != nil {
-			s.storageError = err.Error()
+			return s.storage.Clear(context.Background(), record.Cursor)
 		}
 	}
+	return nil
 }
 
-func (s *entryStore) appendJournalLocked(record storeJournalRecord) {
+func (s *entryStore) appendJournal(record storeJournalRecord) error {
 	if s.storageFile == nil {
-		return
+		return nil
 	}
 	encoded, err := json.Marshal(record)
 	if err != nil {
-		s.storageError = err.Error()
-		return
+		return err
 	}
 	encoded = append(encoded, '\n')
 	written, err := s.storageFile.Write(encoded)
 	s.storageBytes += int64(written)
 	if err != nil {
-		s.storageError = err.Error()
-		return
+		return err
 	}
 	threshold := max(s.maxBytes*2, int64(1<<20))
 	if s.storageBytes > threshold {
-		s.compactJournalLocked()
+		return s.compactJournal()
 	}
+	return nil
 }
 
-func (s *entryStore) compactJournalLocked() {
+func (s *entryStore) compactJournal() error {
 	if s.storageFile == nil {
-		return
+		return nil
 	}
+	s.mu.RLock()
+	entries := make([]Entry, 0, s.order.len())
+	for index := 0; index < s.order.len(); index++ {
+		entries = append(entries, cloneEntry(s.entries[s.order.at(index)]))
+	}
+	s.mu.RUnlock()
 	temporary := s.storagePath + ".tmp"
 	file, err := os.OpenFile(temporary, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
-		s.storageError = err.Error()
-		return
+		return err
 	}
 	encoder := json.NewEncoder(file)
-	for _, id := range s.order {
-		entry := cloneEntry(s.entries[id])
+	for index := range entries {
+		entry := entries[index]
 		if err := encoder.Encode(storeJournalRecord{Operation: "put", Entry: &entry}); err != nil {
 			_ = file.Close()
-			s.storageError = err.Error()
-			return
+			return err
 		}
 	}
 	if err := file.Sync(); err != nil {
 		_ = file.Close()
-		s.storageError = err.Error()
-		return
+		return err
 	}
 	if err := file.Close(); err != nil {
-		s.storageError = err.Error()
-		return
+		return err
 	}
 	if err := s.storageFile.Close(); err != nil {
-		s.storageError = err.Error()
-		return
+		return err
 	}
 	if err := os.Rename(temporary, s.storagePath); err != nil {
-		s.storageError = err.Error()
-		return
+		return err
 	}
 	s.storageFile, err = os.OpenFile(s.storagePath, os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		s.storageError = err.Error()
-		return
+		return err
 	}
 	info, err := s.storageFile.Stat()
 	if err == nil {
 		s.storageBytes = info.Size()
 	}
+	return nil
 }
 
 func (s *entryStore) removeLocked(id string) {
@@ -472,7 +619,20 @@ func (s *entryStore) removeLocked(id string) {
 		return
 	}
 	s.removeMemoryLocked(id)
-	s.persistLocked(storeJournalRecord{Operation: "delete", Entry: &Entry{ID: id}})
+}
+
+func (s *entryStore) removeOldestLocked() (storeJournalRecord, bool) {
+	id, ok := s.order.popFront()
+	if !ok {
+		return storeJournalRecord{}, false
+	}
+	entry, ok := s.entries[id]
+	if !ok {
+		return storeJournalRecord{}, false
+	}
+	delete(s.entries, id)
+	s.bytes -= entrySize(entry)
+	return storeJournalRecord{Operation: "delete", Entry: &Entry{ID: id}}, true
 }
 
 func (s *entryStore) removeMemoryLocked(id string) {
@@ -486,12 +646,7 @@ func (s *entryStore) removeMemoryLocked(id string) {
 }
 
 func (s *entryStore) removeOrderLocked(id string) {
-	for index, current := range s.order {
-		if current == id {
-			s.order = append(s.order[:index], s.order[index+1:]...)
-			return
-		}
-	}
+	s.order.remove(id)
 }
 
 func (s *entryStore) broadcastLocked(message streamMessage) {
@@ -503,6 +658,56 @@ func (s *entryStore) broadcastLocked(message streamMessage) {
 			close(subscriber)
 		}
 	}
+}
+
+func (s *entryStore) storageBatchLocked(records []storeJournalRecord) storageBatch {
+	if len(records) == 0 {
+		return storageBatch{}
+	}
+	if s.storageKind == storageKindMemory {
+		return storageBatch{}
+	}
+	if s.storageKind == storageKindJournal && s.storageFile == nil {
+		return storageBatch{}
+	}
+	if s.storageKind != storageKindJournal && s.storage == nil {
+		return storageBatch{}
+	}
+	s.storageIssued++
+	return storageBatch{sequence: s.storageIssued, records: records}
+}
+
+// persist serializes storage batches by the order assigned under entryStore.mu,
+// but performs all encoding and I/O after releasing that mutex.
+func (s *entryStore) persist(batch storageBatch) {
+	if batch.sequence == 0 {
+		return
+	}
+	s.storageMu.Lock()
+	for batch.sequence != s.storageDone+1 {
+		s.storageCond.Wait()
+	}
+	var persistErr error
+	for _, record := range batch.records {
+		if err := s.persistRecord(record); err != nil {
+			persistErr = errors.Join(persistErr, err)
+		}
+	}
+	s.storageDone = batch.sequence
+	s.storageCond.Broadcast()
+	s.storageMu.Unlock()
+	s.setStorageError(persistErr)
+}
+
+func (s *entryStore) setStorageError(err error) {
+	if err == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.storageError == "" {
+		s.storageError = err.Error()
+	}
+	s.mu.Unlock()
 }
 
 func entrySize(entry Entry) int64 {

@@ -30,7 +30,7 @@ func TestDisabledMiddlewareReturnsOriginalHandler(t *testing.T) {
 
 func TestMiddlewareCapturesCorrelatedEventsAndBodies(t *testing.T) {
 	mux := stdlibhttp.NewServeMux()
-	profiler := webpprof.New(mux, webpprof.WithBodyLimit(1024))
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess(), webpprof.WithBodyLimit(1024))
 	t.Cleanup(func() { _ = profiler.Close() })
 	handler := MiddlewareWith(profiler, stdlibhttp.HandlerFunc(func(w stdlibhttp.ResponseWriter, r *stdlibhttp.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -89,7 +89,7 @@ func TestRequestSchemeUsesForwardedProtocol(t *testing.T) {
 
 func TestMiddlewareExcludesRequestContext(t *testing.T) {
 	mux := stdlibhttp.NewServeMux()
-	profiler := webpprof.New(mux, webpprof.WithExcludedRequests("GET /health"))
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess(), webpprof.WithExcludedRequests("GET /health"))
 	t.Cleanup(func() { _ = profiler.Close() })
 	handler := MiddlewareWith(profiler, stdlibhttp.HandlerFunc(func(w stdlibhttp.ResponseWriter, r *stdlibhttp.Request) {
 		webpprof.LogEventContext(r.Context(), webpprof.Event{Name: "health"})
@@ -106,7 +106,7 @@ func TestMiddlewareExcludesRequestContext(t *testing.T) {
 
 func TestMiddlewareCapturesPanicAsCorrelatedException(t *testing.T) {
 	mux := stdlibhttp.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	handler := MiddlewareWith(profiler, stdlibhttp.HandlerFunc(func(stdlibhttp.ResponseWriter, *stdlibhttp.Request) {
 		panic("handler failed")
@@ -139,7 +139,7 @@ func TestMiddlewareCapturesPanicAsCorrelatedException(t *testing.T) {
 
 func TestProfileMiddlewareCapturesNamedInvocation(t *testing.T) {
 	mux := stdlibhttp.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	named := ProfileMiddlewareWith(profiler, "authentication", func(next stdlibhttp.Handler) stdlibhttp.Handler {
 		return stdlibhttp.HandlerFunc(func(w stdlibhttp.ResponseWriter, r *stdlibhttp.Request) {
@@ -172,7 +172,7 @@ func TestProfileMiddlewareCapturesNamedInvocation(t *testing.T) {
 
 func TestProfileMiddlewareBuildsParentTree(t *testing.T) {
 	mux := stdlibhttp.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	outer := ProfileMiddlewareWith(profiler, "outer", func(next stdlibhttp.Handler) stdlibhttp.Handler { return next })
 	inner := ProfileMiddlewareWith(profiler, "inner", func(next stdlibhttp.Handler) stdlibhttp.Handler { return next })

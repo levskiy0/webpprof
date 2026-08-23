@@ -15,7 +15,7 @@ import (
 
 func TestQueryTracerRecordsNativePGXQuery(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux, webpprof.WithCallsiteKinds(webpprof.KindQuery))
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess(), webpprof.WithCallsiteKinds(webpprof.KindQuery))
 	t.Cleanup(func() { _ = profiler.Close() })
 	tracer := &queryProfiler{profiler: profiler, config: Config{Connection: "primary", Database: "app"}}
 
@@ -36,7 +36,7 @@ func TestQueryTracerRecordsNativePGXQuery(t *testing.T) {
 
 func TestQueryTracerRecordsError(t *testing.T) {
 	mux := http.NewServeMux()
-	profiler := webpprof.New(mux)
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
 	tracer := &queryProfiler{profiler: profiler, config: Config{}}
 

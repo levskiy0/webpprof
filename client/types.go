@@ -11,19 +11,42 @@ import (
 
 // ListEventsOptions controls a bounded event query.
 type ListEventsOptions struct {
-	Kind      webpprof.Kind
+	// Kind matches one exact event kind.
+	Kind webpprof.Kind
+	// RequestID matches the request itself and directly or asynchronously
+	// correlated entries.
 	RequestID string
-	Tags      []string
-	After     uint64
-	Before    uint64
-	Limit     int
+	// Tags contains key or key=value selectors. Every selector must match.
+	Tags []string
+	// Query performs a case-insensitive search over entry metadata, tags, and
+	// the bounded, redacted event data.
+	Query string
+	// Method matches request entries by HTTP method, case-insensitively.
+	Method string
+	// PathContains matches a case-insensitive request-path substring.
+	PathContains string
+	// Status matches request entries by exact HTTP status.
+	Status int
+	// MinDuration defines an inclusive lower duration bound when positive.
+	MinDuration time.Duration
+	// MaxDuration defines an inclusive upper duration bound when positive.
+	MaxDuration time.Duration
+	// After excludes this cursor and all older entries when positive.
+	After uint64
+	// Before excludes this cursor and all newer entries when positive.
+	Before uint64
+	// Limit controls the page size. The default is 200 and the maximum is 1,000.
+	Limit int
 }
 
 // EventPage is the response returned by webpprof's event endpoint.
 type EventPage struct {
-	Events  []webpprof.Entry `json:"events"`
-	HasMore bool             `json:"has_more"`
-	Stats   webpprof.Stats   `json:"stats"`
+	Events []webpprof.Entry `json:"events"`
+	// Scanned reports how many cursor-eligible entries the server inspected to
+	// fill this filtered page.
+	Scanned int            `json:"scanned"`
+	HasMore bool           `json:"has_more"`
+	Stats   webpprof.Stats `json:"stats"`
 }
 
 // RequestSummary is a compact, stable representation of a request entry.
@@ -57,6 +80,7 @@ type WaitForRequestOptions struct {
 	PathContains string
 	Status       int
 	MinDuration  time.Duration
+	MaxDuration  time.Duration
 	PollInterval time.Duration
 }
 
@@ -70,7 +94,8 @@ func (options WaitForRequestOptions) matches(request RequestSummary) bool {
 	if options.Status != 0 && options.Status != request.Status {
 		return false
 	}
-	return time.Duration(request.DurationNS) >= options.MinDuration
+	duration := time.Duration(request.DurationNS)
+	return duration >= options.MinDuration && (options.MaxDuration <= 0 || duration <= options.MaxDuration)
 }
 
 // DecodeRequest validates and decodes a request entry.
