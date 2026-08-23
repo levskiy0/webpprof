@@ -1,0 +1,25 @@
+go 1.25.0
+
+use (
+	.
+	./profiler/asynq
+	./profiler/bun
+	./profiler/chi
+	./profiler/echo
+	./profiler/fiber
+	./profiler/gin
+	./profiler/gocache
+	./profiler/grpc
+	./profiler/gorm
+	./profiler/kafka
+	./profiler/gomail
+	./profiler/goqueue
+	./profiler/goredis
+	./profiler/nats
+	./profiler/otel
+	./profiler/pgx
+	./profiler/zap
+	./profiler/zerolog
+)
+
+replace github.com/levskiy0/webpprof v0.2.0 => .

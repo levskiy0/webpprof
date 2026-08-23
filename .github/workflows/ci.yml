@@ -16,10 +16,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go mod verify
-      - run: go mod tidy
-      - run: git diff --exit-code -- go.mod go.sum
+          cache-dependency-path: "**/go.sum"
+      - run: ./scripts/modules.sh verify
+      - run: ./scripts/modules.sh tidy
+      - run: git diff --exit-code -- '**/go.mod' '**/go.sum' go.work go.work.sum
       - run: node --check ui/app.js
-      - run: go vet ./...
-      - run: go test -race -shuffle=on ./... -count=1 -coverprofile=coverage.out
+      - run: ./scripts/modules.sh vet
+      - run: ./scripts/modules.sh test -race -shuffle=on -count=1
       - run: go test . -run '^$' -bench BenchmarkEntryStorePutAndList -benchtime=100x

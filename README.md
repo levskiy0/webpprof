@@ -48,6 +48,8 @@ local debugging into an infrastructure project.
   from Bun, `database/sql`, or OpenTelemetry spans.
 - **Request correlation:** related middleware, queries, cache operations, jobs,
   logs, mail, outgoing HTTP calls, schedules, exceptions, and custom events.
+- **Configurable Go callsites:** capture source stacks only for selected query,
+  cache, mail, job, outgoing HTTP, and schedule operations.
 - **Waterfall timeline:** inspect proportional Gantt bars on one request-wide
   scale, automatic `ParentID` nesting, the calculated critical path,
   bottleneck, and operation-time breakdown.

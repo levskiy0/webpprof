@@ -17,10 +17,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go mod verify
+          cache-dependency-path: "**/go.sum"
+      - run: ./scripts/modules.sh verify
       - run: node --check ui/app.js
-      - run: go vet ./...
-      - run: go test -race -shuffle=on ./... -count=1
+      - run: ./scripts/modules.sh vet
+      - run: ./scripts/modules.sh test -race -shuffle=on -count=1
 
   release:
     needs: verify

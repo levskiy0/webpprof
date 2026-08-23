@@ -82,7 +82,10 @@ func isCallsiteInfrastructureFrame(kind Kind, function string) bool {
 			return true
 		}
 	}
-	if kind == KindQuery && (strings.HasPrefix(function, "database/sql.") || strings.HasPrefix(function, "github.com/uptrace/bun.")) {
+	if kind == KindQuery && (strings.HasPrefix(function, "database/sql.") ||
+		strings.HasPrefix(function, "github.com/jackc/pgx/") ||
+		strings.HasPrefix(function, "github.com/uptrace/bun.") ||
+		strings.HasPrefix(function, "gorm.io/gorm.")) {
 		return true
 	}
 	for _, prefix := range []string{

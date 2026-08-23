@@ -127,6 +127,15 @@ func (c *RequestCapture) AddTags(tags map[string]string) {
 	c.append(func(request *Request) { request.Tags = mergeTags(request.Tags, tags) })
 }
 
+// SetRoute updates the matched route pattern before the request is finished.
+// Framework middleware can call it after routing has selected a handler.
+func (c *RequestCapture) SetRoute(route string) {
+	if c == nil || route == "" {
+		return
+	}
+	c.append(func(request *Request) { request.Route = route })
+}
+
 func (c *RequestCapture) Finish(result RequestResult) {
 	if c == nil {
 		return

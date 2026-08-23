@@ -25,10 +25,12 @@ The related **Schedules** entry includes a structured payload with a player ID,
 tenant, refresh mode, and requested resources.
 The related **Queries** entry also adds the entity-specific
 `repository=players` tag on top of the tags inherited from the request context.
-Open that query to inspect its automatically captured Go callsite, click the
-first frame to open it in VS Code, inspect the representative SQLite EXPLAIN
-plan, and copy a safe Go replay skeleton. SQL arguments are deliberately not
-stored, so replay code contains a `TODO` for placeholder values.
+The example enables callsites for queries, cache operations, mail, jobs,
+outgoing HTTP calls, and schedules. Open one of those entries to inspect its
+captured Go stack and click a frame to open it in VS Code. Queries additionally
+include a representative SQLite EXPLAIN plan and a safe Go replay skeleton.
+SQL arguments are deliberately not stored, so replay code contains a `TODO`
+for placeholder values.
 Open **Timeline** to see the named middleware nested automatically and all
 downstream entities positioned on a shared Gantt scale. The panel also shows
 the critical path, bottleneck, and recorded-time breakdown.
