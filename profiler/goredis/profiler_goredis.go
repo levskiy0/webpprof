@@ -1,3 +1,5 @@
+// Package goredis records go-redis commands and pipelines as webpprof cache
+// operations without capturing command values.
 package goredis
 
 import (
@@ -10,11 +12,15 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// ProfilerGoRedis implements webpprof.Integration for go-redis clients.
 type ProfilerGoRedis struct {
 	Store string
 }
 
+// RedisHookRegistrar is the subset of a go-redis client needed to install the
+// profiler hook.
 type RedisHookRegistrar interface {
+	// AddHook appends a Redis hook to the client.
 	AddHook(redis.Hook)
 }
 
@@ -23,6 +29,8 @@ type redisProfilerHook struct {
 	store    string
 }
 
+// New creates a Redis integration. The first non-empty store label is used in
+// captured entries and defaults to "redis".
 func New(stores ...string) ProfilerGoRedis {
 	store := "redis"
 	if len(stores) > 0 && stores[0] != "" {
@@ -31,10 +39,13 @@ func New(stores ...string) ProfilerGoRedis {
 	return ProfilerGoRedis{Store: store}
 }
 
+// Name returns the integration cache namespace.
 func (ProfilerGoRedis) Name() string {
 	return "go-redis"
 }
 
+// Profile installs one profiler hook on client for the current scope. Repeated
+// calls for the same client and profiler are idempotent.
 func (d ProfilerGoRedis) Profile(scope webpprof.Scope, client RedisHookRegistrar) RedisHookRegistrar {
 	p := scope.Profiler()
 	if p == nil || client == nil {
@@ -47,10 +58,12 @@ func (d ProfilerGoRedis) Profile(scope webpprof.Scope, client RedisHookRegistrar
 	return client
 }
 
+// Profile instruments client with the default profiler.
 func Profile(client RedisHookRegistrar, stores ...string) RedisHookRegistrar {
 	return webpprof.Profile(client, New(stores...))
 }
 
+// ProfileWith instruments client with an explicit profiler.
 func ProfileWith(profiler *webpprof.Profiler, client RedisHookRegistrar, stores ...string) RedisHookRegistrar {
 	return webpprof.ProfileWith(profiler, client, New(stores...))
 }

@@ -56,6 +56,9 @@ func redactedValue(value any) any {
 	}
 }
 
+// Redact replaces sensitive values in JSON-like maps and slices in place.
+// Structs and other concrete values are left unchanged; Log methods perform a
+// JSON round trip before applying the same policy.
 func Redact(value any) {
 	redact(value)
 }
@@ -71,6 +74,8 @@ func isSensitiveKey(key string) bool {
 	return false
 }
 
+// IsSensitiveKey reports whether key matches the profiler's built-in secret
+// names after case and separator normalization.
 func IsSensitiveKey(key string) bool {
 	return isSensitiveKey(key)
 }

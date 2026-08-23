@@ -55,10 +55,14 @@ func TagsFromContext(ctx context.Context) map[string]string {
 	return cloneTags(tags)
 }
 
+// WithoutRecording returns a child context that suppresses context-aware
+// profiler integrations downstream.
 func WithoutRecording(ctx context.Context) context.Context {
 	return context.WithValue(ctx, recordingDisabledContextKey{}, true)
 }
 
+// RecordingEnabled reports whether context-aware profiler integrations should
+// record work for ctx. A nil context is treated as enabled.
 func RecordingEnabled(ctx context.Context) bool {
 	if ctx == nil {
 		return true
@@ -67,10 +71,14 @@ func RecordingEnabled(ctx context.Context) bool {
 	return !disabled
 }
 
+// LogQueryContext records a query with the default profiler and inherits tags,
+// parent entry, and request correlation from ctx.
 func LogQueryContext(ctx context.Context, query Query) {
 	withDefault(func(p *Profiler) { p.LogQueryContext(ctx, query) })
 }
 
+// LogQueryContext records a query with this profiler and inherits tags, parent
+// entry, and request correlation from ctx.
 func (p *Profiler) LogQueryContext(ctx context.Context, query Query) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return
@@ -89,10 +97,14 @@ func (p *Profiler) LogQueryContext(ctx context.Context, query Query) {
 	p.LogQuery(query)
 }
 
+// LogEmailContext records an email with the default profiler and correlation
+// inherited from ctx.
 func LogEmailContext(ctx context.Context, email Email) {
 	withDefault(func(p *Profiler) { p.LogEmailContext(ctx, email) })
 }
 
+// LogEmailContext records an email with this profiler and correlation inherited
+// from ctx.
 func (p *Profiler) LogEmailContext(ctx context.Context, email Email) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return
@@ -111,10 +123,14 @@ func (p *Profiler) LogEmailContext(ctx context.Context, email Email) {
 	p.LogEmail(email)
 }
 
+// LogCacheContext records a cache operation with the default profiler and
+// correlation inherited from ctx.
 func LogCacheContext(ctx context.Context, cache Cache) {
 	withDefault(func(p *Profiler) { p.LogCacheContext(ctx, cache) })
 }
 
+// LogCacheContext records a cache operation with this profiler and correlation
+// inherited from ctx.
 func (p *Profiler) LogCacheContext(ctx context.Context, cache Cache) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return
@@ -133,10 +149,14 @@ func (p *Profiler) LogCacheContext(ctx context.Context, cache Cache) {
 	p.LogCache(cache)
 }
 
+// LogJobContext records a job with the default profiler and correlation
+// inherited from ctx.
 func LogJobContext(ctx context.Context, job Job) {
 	withDefault(func(p *Profiler) { p.LogJobContext(ctx, job) })
 }
 
+// LogJobContext records a job with this profiler and correlation inherited from
+// ctx.
 func (p *Profiler) LogJobContext(ctx context.Context, job Job) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return
@@ -155,10 +175,14 @@ func (p *Profiler) LogJobContext(ctx context.Context, job Job) {
 	p.LogJob(job)
 }
 
+// LogLogContext records a structured log with the default profiler and
+// correlation inherited from ctx.
 func LogLogContext(ctx context.Context, log Log) {
 	withDefault(func(p *Profiler) { p.LogLogContext(ctx, log) })
 }
 
+// LogLogContext records a structured log with this profiler and correlation
+// inherited from ctx.
 func (p *Profiler) LogLogContext(ctx context.Context, log Log) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return
@@ -176,10 +200,14 @@ func (p *Profiler) LogLogContext(ctx context.Context, log Log) {
 	p.LogLog(log)
 }
 
+// LogHTTPCallContext records an outbound HTTP call with the default profiler and
+// correlation inherited from ctx.
 func LogHTTPCallContext(ctx context.Context, call HTTPCall) {
 	withDefault(func(p *Profiler) { p.LogHTTPCallContext(ctx, call) })
 }
 
+// LogHTTPCallContext records an outbound HTTP call with this profiler and
+// correlation inherited from ctx.
 func (p *Profiler) LogHTTPCallContext(ctx context.Context, call HTTPCall) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return
@@ -198,10 +226,14 @@ func (p *Profiler) LogHTTPCallContext(ctx context.Context, call HTTPCall) {
 	p.LogHTTPCall(call)
 }
 
+// LogScheduleContext records a scheduled task with the default profiler and
+// correlation inherited from ctx.
 func LogScheduleContext(ctx context.Context, schedule Schedule) {
 	withDefault(func(p *Profiler) { p.LogScheduleContext(ctx, schedule) })
 }
 
+// LogScheduleContext records a scheduled task with this profiler and correlation
+// inherited from ctx.
 func (p *Profiler) LogScheduleContext(ctx context.Context, schedule Schedule) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return
@@ -220,10 +252,14 @@ func (p *Profiler) LogScheduleContext(ctx context.Context, schedule Schedule) {
 	p.LogSchedule(schedule)
 }
 
+// LogExceptionContext records an exception with the default profiler and
+// correlation inherited from ctx.
 func LogExceptionContext(ctx context.Context, exception Exception) {
 	withDefault(func(p *Profiler) { p.LogExceptionContext(ctx, exception) })
 }
 
+// LogExceptionContext records an exception with this profiler and correlation
+// inherited from ctx.
 func (p *Profiler) LogExceptionContext(ctx context.Context, exception Exception) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return
@@ -252,10 +288,14 @@ func PanicException(recovered any) Exception {
 	}
 }
 
+// LogEventContext records a custom event with the default profiler and
+// correlation inherited from ctx.
 func LogEventContext(ctx context.Context, event Event) {
 	withDefault(func(p *Profiler) { p.LogEventContext(ctx, event) })
 }
 
+// LogEventContext records a custom event with this profiler and correlation
+// inherited from ctx.
 func (p *Profiler) LogEventContext(ctx context.Context, event Event) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return

@@ -5,6 +5,28 @@ versioning and are published from `v*` Git tags.
 
 ## Unreleased
 
+## 0.4.2 - 2026-08-24
+
+### Added
+
+- Added executable pkg.go.dev examples for the core package and the `net/http`
+  integration.
+- Added a repository-wide GoDoc coverage check to `make check` for every public
+  library package across all Go modules.
+
+### Changed
+
+- Documented the exported core API and integration adapters, including package
+  overviews, configuration options, DTOs, integration contracts, and methods.
+- Reused each entity section's original table columns and row presentation in
+  request-related tabs, with consistent badge counters across all tabs.
+- Marked the project as early-stage and pre-v1 near the top of the README.
+
+### Fixed
+
+- Kept request-related entity rows white while preserving their hover state and
+  aligned the final table-header column with the row action control.
+
 ## 0.4.1 - 2026-08-24
 
 ### Added

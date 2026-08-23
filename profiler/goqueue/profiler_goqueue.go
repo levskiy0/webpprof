@@ -1,3 +1,5 @@
+// Package goqueue instruments github.com/levskiy0/go-queue dispatches, job
+// execution, and queue statistics.
 package goqueue
 
 import (
@@ -8,16 +10,23 @@ import (
 	"github.com/levskiy0/webpprof"
 )
 
+// ProfilerGoQueue implements webpprof.Integration for queue instances.
 type ProfilerGoQueue struct {
 	DefaultQueue string
 }
 
+// ProfilerJobs implements webpprof.Integration for registered job slices.
 type ProfilerJobs struct {
 	Queue string
 }
 
+// Queue aliases the go-queue facade accepted by Profile.
 type Queue = queuecontract.Queue
+
+// Job aliases the go-queue job contract wrapped during execution.
 type Job = queuecontract.Job
+
+// Task aliases the go-queue dispatch builder returned by profiled queues.
 type Task = queuecontract.Task
 
 type profiledQueue struct {
@@ -42,6 +51,8 @@ type profiledQueueTask struct {
 	availableAt time.Time
 }
 
+// New creates a queue integration. The first non-empty name becomes the default
+// queue label and defaults to "default".
 func New(names ...string) ProfilerGoQueue {
 	name := "default"
 	if len(names) > 0 && names[0] != "" {
@@ -50,10 +61,13 @@ func New(names ...string) ProfilerGoQueue {
 	return ProfilerGoQueue{DefaultQueue: name}
 }
 
+// Name returns the queue integration cache namespace.
 func (ProfilerGoQueue) Name() string {
 	return "go-queue"
 }
 
+// Profile wraps queue dispatch and registration operations and registers queue
+// statistics when the underlying value supports them.
 func (d ProfilerGoQueue) Profile(scope webpprof.Scope, queue Queue) Queue {
 	p := scope.Profiler()
 	if p == nil || queue == nil {
@@ -68,10 +82,12 @@ func (d ProfilerGoQueue) Profile(scope webpprof.Scope, queue Queue) Queue {
 	return &profiledQueue{inner: queue, profiler: p, defaultQueue: d.DefaultQueue}
 }
 
+// Profile instruments queue with the default profiler.
 func Profile(queue Queue, names ...string) Queue {
 	return webpprof.Profile(queue, New(names...))
 }
 
+// ProfileWith instruments queue with an explicit profiler.
 func ProfileWith(profiler *webpprof.Profiler, queue Queue, names ...string) Queue {
 	return webpprof.ProfileWith(profiler, queue, New(names...))
 }
@@ -89,10 +105,13 @@ func (s *goQueueStatsSource) QueueStats(ctx context.Context) (webpprof.QueueStat
 	return result, err
 }
 
+// Name returns the job integration cache namespace.
 func (d ProfilerJobs) Name() string {
 	return "go-queue-jobs"
 }
 
+// Profile wraps each job so execution results are recorded with the configured
+// queue label.
 func (d ProfilerJobs) Profile(scope webpprof.Scope, jobs []Job) []Job {
 	p := scope.Profiler()
 	if p == nil {
@@ -105,10 +124,12 @@ func (d ProfilerJobs) Profile(scope webpprof.Scope, jobs []Job) []Job {
 	return profiled
 }
 
+// ProfileJobs instruments jobs with the default profiler.
 func ProfileJobs(jobs []Job, queue string) []Job {
 	return webpprof.Profile(jobs, ProfilerJobs{Queue: queue})
 }
 
+// ProfileJobsWith instruments jobs with an explicit profiler.
 func ProfileJobsWith(profiler *webpprof.Profiler, jobs []Job, queue string) []Job {
 	return webpprof.ProfileWith(profiler, jobs, ProfilerJobs{Queue: queue})
 }

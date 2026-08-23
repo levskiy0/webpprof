@@ -8,6 +8,10 @@
 queries, cache operations, background jobs, logs, mail, outgoing HTTP calls,
 middleware, and panics — in one searchable local UI.
 
+> **Early-stage:** webpprof is pre-v1. Public APIs and persisted capture formats
+> may change between minor releases, so pin a version and review the changelog
+> before upgrading.
+
 Use it to find why an endpoint is slow, inspect the SQL it executed, follow
 related operations through `context.Context`, and replay a captured HTTP request
 as cURL. webpprof runs inside the application and needs no external collector,

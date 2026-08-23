@@ -1,3 +1,5 @@
+// Package gomail records messages sent through github.com/wneessen/go-mail as
+// webpprof email entries without capturing message bodies.
 package gomail
 
 import (
@@ -9,10 +11,13 @@ import (
 	gomail "github.com/wneessen/go-mail"
 )
 
+// Client is the subset of go-mail.Client required by this integration.
 type Client interface {
+	// DialAndSendWithContext connects and sends messages using ctx.
 	DialAndSendWithContext(context.Context, ...*gomail.Msg) error
 }
 
+// ProfilerGoMail implements webpprof.Integration for go-mail clients.
 type ProfilerGoMail struct{}
 
 type profiledClient struct {
@@ -20,14 +25,18 @@ type profiledClient struct {
 	profiler *webpprof.Profiler
 }
 
+// New creates a go-mail integration.
 func New() ProfilerGoMail {
 	return ProfilerGoMail{}
 }
 
+// Name returns the integration cache namespace.
 func (ProfilerGoMail) Name() string {
 	return "go-mail"
 }
 
+// Profile wraps client so each send attempt is recorded. An existing wrapper
+// for the same profiler is returned unchanged.
 func (ProfilerGoMail) Profile(scope webpprof.Scope, client Client) Client {
 	profiler := scope.Profiler()
 	if profiler == nil || client == nil {
@@ -39,10 +48,12 @@ func (ProfilerGoMail) Profile(scope webpprof.Scope, client Client) Client {
 	return &profiledClient{inner: client, profiler: profiler}
 }
 
+// Profile instruments client with the default profiler.
 func Profile(client Client) Client {
 	return webpprof.Profile(client, New())
 }
 
+// ProfileWith instruments client with an explicit profiler.
 func ProfileWith(profiler *webpprof.Profiler, client Client) Client {
 	return webpprof.ProfileWith(profiler, client, New())
 }

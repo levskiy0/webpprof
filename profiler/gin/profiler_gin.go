@@ -1,3 +1,4 @@
+// Package gin provides request and middleware profiling for Gin applications.
 package gin
 
 import (
@@ -16,22 +17,29 @@ type ginResponseObserver struct {
 	body *webpprofhttp.BodyRecorder
 }
 
+// ProfilerGin binds Gin middleware construction to a specific profiler.
 type ProfilerGin struct {
 	profiler *webpprof.Profiler
 }
 
+// New creates a Gin integration bound to profiler. A nil profiler produces
+// pass-through middleware.
 func New(profiler *webpprof.Profiler) ProfilerGin {
 	return ProfilerGin{profiler: profiler}
 }
 
+// Middleware profiles Gin requests using the default profiler.
 func Middleware() gin.HandlerFunc {
 	return New(webpprof.Default()).Middleware()
 }
 
+// MiddlewareWith profiles Gin requests using p.
 func MiddlewareWith(p *webpprof.Profiler) gin.HandlerFunc {
 	return New(p).Middleware()
 }
 
+// Middleware returns a Gin handler that records request, response, route,
+// related operations, errors, and panics.
 func (p ProfilerGin) Middleware() gin.HandlerFunc {
 	profiler := p.profiler
 	if profiler == nil {

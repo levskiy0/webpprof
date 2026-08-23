@@ -21,10 +21,14 @@ type responseObserver struct {
 	body        *BodyRecorder
 }
 
+// Middleware records inbound requests handled by next using the default
+// profiler. It panics when next is nil.
 func Middleware(next stdlibhttp.Handler) stdlibhttp.Handler {
 	return MiddlewareWith(webpprof.Default(), next)
 }
 
+// MiddlewareWith records inbound requests handled by next using p. A nil
+// profiler returns next unchanged; a nil handler causes a panic.
 func MiddlewareWith(p *webpprof.Profiler, next stdlibhttp.Handler) stdlibhttp.Handler {
 	if next == nil {
 		panic("webpprof: nil HTTP handler")
@@ -181,6 +185,8 @@ func sanitizeQuery(raw string) string {
 	return strings.ReplaceAll(values.Encode(), url.QueryEscape("[REDACTED]"), "[REDACTED]")
 }
 
+// SanitizeQuery parses a raw query string and redacts values whose keys match
+// webpprof's sensitive-key policy. Invalid encodings return "[REDACTED]".
 func SanitizeQuery(raw string) string {
 	return sanitizeQuery(raw)
 }

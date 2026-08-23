@@ -178,6 +178,12 @@ function bind(){
       openDetail(target.dataset.eventId,"push");
     }
   });
+  elements.detail.addEventListener("keydown",event=>{
+    const row=event.target.closest("tr[data-event-id]");
+    if(!row||event.target!==row||event.key!=="Enter"&&event.key!==" ")return;
+    event.preventDefault();
+    if(state.events.has(row.dataset.eventId))openDetail(row.dataset.eventId,"push");
+  });
   window.addEventListener("popstate",()=>{
     restoreLocation();
     renderKinds();
@@ -852,8 +858,7 @@ function renderEntityFilters(){
 }
 
 function renderListHeading(){
-  const layout=listLayout(state.kind);
-  elements["list-heading"].innerHTML=`<tr>${layout.badge?`<th scope="col" class="table-fit">${escapeHTML(layout.badge)}</th>`:""}<th scope="col">${escapeHTML(layout.entry)}</th>${layout.status?`<th scope="col" class="table-fit text-center">${escapeHTML(layout.status)}</th>`:""}${layout.duration?'<th scope="col" class="table-fit text-right">Duration</th>':""}<th scope="col" class="table-fit">Happened</th><th scope="col" class="table-fit"><span class="sr-only">Open</span></th></tr>`;
+  elements["list-heading"].innerHTML=listHeadingRow(state.kind);
 }
 
 function renderDashboard(){
@@ -1299,18 +1304,27 @@ function syncLocation(mode="replace"){
 
 function row(event){
   const tableRow=document.createElement("tr");
-  const status=statusFor(event);
-  const layout=listLayout(state.kind);
-  const badge=layout.badge?listBadge(event):null;
   tableRow.className=`event-row${state.selected===event.id?" active":""}`;
   tableRow.dataset.id=event.id;
   tableRow.dataset.kind=event.kind;
   tableRow.tabIndex=0;
   tableRow.setAttribute("role","link");
   tableRow.setAttribute("aria-label",`Open ${kindSingular(event.kind)} details`);
-  const title=eventPreviewTitle(event);
-  tableRow.innerHTML=`${badge?`<td class="table-fit pr-0"><span class="method${badge.className?` ${escapeHTML(badge.className)}`:""}" title="${escapeHTML(badge.label)}">${escapeHTML(badge.label)}</span></td>`:""}<td class="event-entry" title="${escapeHTML(title)}">${eventPreview(event)}</td>${layout.status?`<td class="table-fit text-center"><span class="state ${status.className}">${escapeHTML(status.label)}</span></td>`:""}${layout.duration?`<td class="table-fit text-right text-muted"><span class="duration">${duration(event.duration_ns)}</span></td>`:""}<td class="table-fit text-muted event-time" data-timeago="${escapeHTML(event.started_at||"")}" title="${escapeHTML(event.started_at||"")}">${relativeTime(event.started_at)}</td><td class="table-fit">${tableRowAction()}</td>`;
+  tableRow.innerHTML=eventRowCells(event,state.kind);
   return tableRow;
+}
+
+function listHeadingRow(kind){
+  const layout=listLayout(kind);
+  return`<tr>${layout.badge?`<th scope="col" class="table-fit">${escapeHTML(layout.badge)}</th>`:""}<th scope="col">${escapeHTML(layout.entry)}</th>${layout.status?`<th scope="col" class="table-fit text-center">${escapeHTML(layout.status)}</th>`:""}${layout.duration?'<th scope="col" class="table-fit text-right">Duration</th>':""}<th scope="col" class="table-fit">Happened</th><th scope="col" class="table-fit"><span class="sr-only">Open</span></th></tr>`;
+}
+
+function eventRowCells(event,kind){
+  const status=statusFor(event);
+  const layout=listLayout(kind);
+  const badge=layout.badge?listBadge(event,kind):null;
+  const title=eventPreviewTitle(event);
+  return`${badge?`<td class="table-fit pr-0"><span class="method${badge.className?` ${escapeHTML(badge.className)}`:""}" title="${escapeHTML(badge.label)}">${escapeHTML(badge.label)}</span></td>`:""}<td class="event-entry" title="${escapeHTML(title)}">${eventPreview(event,kind)}</td>${layout.status?`<td class="table-fit text-center"><span class="state ${status.className}">${escapeHTML(status.label)}</span></td>`:""}${layout.duration?`<td class="table-fit text-right text-muted"><span class="duration">${duration(event.duration_ns)}</span></td>`:""}<td class="table-fit text-muted event-time" data-timeago="${escapeHTML(event.started_at||"")}" title="${escapeHTML(event.started_at||"")}">${relativeTime(event.started_at)}</td><td class="table-fit">${tableRowAction()}</td>`;
 }
 
 function listLayout(kind){
@@ -1335,24 +1349,24 @@ function listColumnCount(layout){
   return 3+Number(Boolean(layout.badge))+Number(Boolean(layout.status))+Number(Boolean(layout.duration));
 }
 
-function listBadge(event){
+function listBadge(event,kind=state.kind){
   const data=event.data||{};
-  if(state.kind==="")return{label:kindSingular(event.kind),className:`method-kind-${event.kind}`};
-  if(methodFilterKinds.has(state.kind)){
+  if(kind==="")return{label:kindSingular(event.kind),className:`method-kind-${event.kind}`};
+  if(methodFilterKinds.has(kind)){
     const method=String(data.method||"HTTP").toUpperCase();
     return{label:method,className:`method-${method.toLowerCase().replace(/[^a-z0-9_-]/g,"")}`};
   }
-  if(state.kind==="query"||state.kind==="cache"){
-    const operation=String(data.operation||(state.kind==="query"?"SQL":"CACHE")).toUpperCase();
+  if(kind==="query"||kind==="cache"){
+    const operation=String(data.operation||(kind==="query"?"SQL":"CACHE")).toUpperCase();
     return{label:operation,className:`method-operation method-operation-${badgeToken(operation)}`};
   }
-  if(state.kind==="job")return{label:data.queue||"default",className:"method-queue"};
-  if(state.kind==="email")return{label:data.transport||"mail",className:"method-transport"};
-  if(state.kind==="log"){
+  if(kind==="job")return{label:data.queue||"default",className:"method-queue"};
+  if(kind==="email")return{label:data.transport||"mail",className:"method-transport"};
+  if(kind==="log"){
     const level=normalizedLogLevel(data.level||"log");
     return{label:level.toUpperCase(),className:`method-level method-level-${badgeToken(level)}`};
   }
-  if(state.kind==="exception")return{label:data.type||"Exception",className:"method-exception-type"};
+  if(kind==="exception")return{label:data.type||"Exception",className:"method-exception-type"};
   return null;
 }
 
@@ -1365,20 +1379,20 @@ function kindSingular(kind){
   return labels[kind]||kind;
 }
 
-function eventPreview(event){
+function eventPreview(event,kind=state.kind){
   const data=event.data||{};
   if(event.kind==="request")return entityPreview({title:requestTarget(data)},"event-main");
   let content;
-  if(state.kind==="middleware")content={title:data.name||"Middleware"};
-  else if(state.kind==="query")content={title:compactQuery(data.sql||""),full:data.sql||"",code:true};
-  else if(state.kind==="cache")content={title:data.key||"Cache operation",code:true};
-  else if(state.kind==="job")content={title:data.name||"Job"};
-  else if(state.kind==="email")content={title:data.subject||"Email"};
-  if(state.kind==="log")content={title:data.message||"Log entry"};
-  else if(state.kind==="http_call")content={title:data.url||"HTTP call"};
-  else if(state.kind==="schedule")content={title:data.name||"Scheduled task"};
-  else if(state.kind==="exception")content={title:data.message||"Exception"};
-  else if(state.kind==="event")content={title:data.name||data.summary||"Event"};
+  if(kind==="middleware")content={title:data.name||"Middleware"};
+  else if(kind==="query")content={title:compactQuery(data.sql||""),full:data.sql||"",code:true};
+  else if(kind==="cache")content={title:data.key||"Cache operation",code:true};
+  else if(kind==="job")content={title:data.name||"Job"};
+  else if(kind==="email")content={title:data.subject||"Email"};
+  if(kind==="log")content={title:data.message||"Log entry"};
+  else if(kind==="http_call")content={title:data.url||"HTTP call"};
+  else if(kind==="schedule")content={title:data.name||"Scheduled task"};
+  else if(kind==="exception")content={title:data.message||"Exception"};
+  else if(kind==="event")content={title:data.name||data.summary||"Event"};
   return entityPreview(content||relationContent(event.kind,event,data),"event-main");
 }
 
@@ -1761,7 +1775,7 @@ function cardTabs(group,tabs,active,action=""){
     const tabID=`card-tab-${key}-${tab.key}`;
     let meta="";
     if(tab.badge!==undefined)meta=`<span class="tab-badge">${escapeHTML(tab.badge)}</span>`;
-    else if(tab.count!==undefined)meta=` <span class="tab-count">(${escapeHTML(tab.count)})</span>`;
+    else if(tab.count!==undefined)meta=`<span class="tab-badge">${escapeHTML(tab.count)}</span>`;
     return`<button type="button" id="${escapeHTML(tabID)}" role="tab" aria-selected="${selected}" aria-controls="${escapeHTML(panelID)}" tabindex="${selected?0:-1}" data-card-tab="${escapeHTML(`${key}:${tab.key}`)}" class="card-tab${selected?" active":""}">${escapeHTML(tab.label)}${meta}</button>`;
   }).join("");
   return`<nav class="card-tabs" aria-label="${escapeHTML(group)} details"><div class="card-tab-list" role="tablist">${buttons}</div>${action?`<div class="card-tab-actions">${action}</div>`:""}</nav>`;
@@ -1914,31 +1928,8 @@ function shellQuote(value){
 
 function relatedCollection(kind,events){
   if(!events.length)return'<div class="detail-empty compact"><strong>No related entries</strong></div>';
-  const summary=relationSummary(kind,events);
-  const className=summary.status?" with-status":"";
-  return`<section class="relation-list${className}"><header class="relation-heading"><div><strong>${escapeHTML(summary.title)}</strong><small>${escapeHTML(summary.description)}</small></div>${summary.status?`<div class="relation-heading-status"><strong>${escapeHTML(summary.status.title)}</strong><small>${escapeHTML(summary.status.description)}</small></div>`:""}<div class="relation-heading-duration"><strong>Duration</strong><small>${escapeHTML(duration(summary.duration))}</small></div><span></span></header><div class="relation-rows">${events.map(event=>relationRow(kind,event,summary.status!==null)).join("")}</div></section>`;
-}
-
-function relationSummary(kind,events){
-  const totalDuration=events.reduce((total,event)=>total+eventDuration(event),0);
-  if(kind==="query"){
-    const unique=new Set(events.map(event=>normalizeQuery((event.data||{}).sql||""))).size;
-    const duplicated=Math.max(0,events.length-unique);
-    return{title:"Query",description:`${events.length} ${plural(events.length,"query","queries")}, ${duplicated} duplicated.`,status:null,duration:totalDuration};
-  }
-  if(kind==="cache"){
-    const hits=events.filter(event=>(event.data||{}).hit).length;
-    return{title:"Cache operation",description:`${events.length} ${plural(events.length,"operation","operations")}.`,status:{title:"Result",description:events.length?`${Math.round(hits/events.length*100)}% hit rate`:"—"},duration:totalDuration};
-  }
-  const failures=events.filter(isFailure).length;
-  return{title:kindLabel(kind).replace(/s$/,""),description:`${events.length} recorded ${plural(events.length,"entry","entries")}.`,status:{title:"Status",description:failures?`${failures} failed`:"No failures"},duration:totalDuration};
-}
-
-function relationRow(kind,event,withStatus){
-  const data=event.data||{};
-  const status=statusFor(event);
-  const content=relationContent(kind,event,data);
-  return`<button type="button" class="relation-row${withStatus?" with-status":""}" data-event-id="${escapeHTML(event.id)}" title="${escapeHTML(content.full||content.title)}">${entityPreview(content,"relation-primary")}${withStatus?`<span class="relation-result"><span class="state ${status.className}">${escapeHTML(status.label)}</span></span>`:""}<span class="relation-duration">${escapeHTML(duration(event.duration_ns))}</span>${rowAction()}</button>`;
+  const rows=events.map(event=>`<tr class="event-row" data-event-id="${escapeHTML(event.id)}" data-kind="${escapeHTML(event.kind)}" tabindex="0" role="link" aria-label="Open ${escapeHTML(kindSingular(event.kind))} details">${eventRowCells(event,kind)}</tr>`).join("");
+  return`<div class="table-wrap"><table class="event-table related-event-table penultimate-column-right"><thead class="list-heading">${listHeadingRow(kind)}</thead><tbody>${rows}</tbody></table></div>`;
 }
 
 function rowAction(){
@@ -1965,14 +1956,6 @@ function relationContent(kind,event,data){
 function compactQuery(sql){
   const value=sql.replace(/\s+/g," ").trim();
   return value.length>150?`${value.slice(0,147)}…`:value||"SQL query";
-}
-
-function normalizeQuery(sql){
-  return sql.replace(/\s+/g," ").trim().toLowerCase();
-}
-
-function plural(count,singular,pluralValue){
-  return count===1?singular:pluralValue;
 }
 
 function timeline(events){

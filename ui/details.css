@@ -554,81 +554,6 @@
   color: #4f52bd;
 }
 
-.relation-list {
-  background: #fff;
-}
-
-.relation-heading,
-.relation-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 112px 34px;
-  align-items: center;
-  gap: 14px;
-}
-
-.relation-heading.with-status,
-.relation-list.with-status .relation-heading,
-.relation-row.with-status {
-  grid-template-columns: minmax(0, 1fr) 96px 112px 34px;
-}
-
-.relation-heading {
-  min-height: 76px;
-  padding: 12px 18px;
-  border-bottom: 1px solid #dfe2e7;
-  background: #f4f5f7;
-}
-
-.relation-heading > div {
-  display: grid;
-  gap: 3px;
-}
-
-.relation-heading strong {
-  color: #363c47;
-  font-size: 15px;
-  font-weight: 650;
-}
-
-.relation-heading small {
-  color: #858c97;
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.relation-heading-status,
-.relation-heading-duration {
-  text-align: right;
-}
-
-.relation-row {
-  width: 100%;
-  min-height: 72px;
-  padding: 10px 18px;
-  border: 0;
-  border-bottom: 1px solid #e8eaee;
-  background: #fff;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: background 100ms;
-}
-
-.relation-row:last-child {
-  border-bottom: 0;
-}
-
-.relation-row:hover {
-  background: #f8f9fb;
-}
-
-.relation-row:focus-visible {
-  position: relative;
-  z-index: 1;
-  outline: 2px solid #6366d9;
-  outline-offset: -2px;
-}
-
 .entity-preview {
   display: grid;
   min-width: 0;
@@ -688,17 +613,6 @@ pre code {
   line-height: 1.5;
 }
 
-.relation-result,
-.relation-duration {
-  justify-self: end;
-}
-
-.relation-duration {
-  color: #68707d;
-  font: 14px "SFMono-Regular", Consolas, monospace;
-  white-space: nowrap;
-}
-
 .relation-action {
   display: grid;
   width: 24px;
@@ -717,8 +631,7 @@ pre code {
   fill: currentColor;
 }
 
-.relation-row:hover .relation-action,
-.event-row:hover .relation-action {
+.gantt-row:hover .relation-action {
   background: #e8e9fb;
   color: #5b5ecb;
   transform: translateX(1px);
@@ -842,6 +755,14 @@ pre code {
 
 .event-table .text-muted {
   color: #6b7280;
+}
+
+.related-event-table .list-heading th {
+  position: static;
+}
+
+.related-event-table .event-row td {
+  background: #fff;
 }
 
 .card-toolbar {
@@ -1786,21 +1707,6 @@ pre code {
 
   .method {
     font-size: 12px;
-  }
-
-  .relation-heading,
-  .relation-row,
-  .relation-heading.with-status,
-  .relation-list.with-status .relation-heading,
-  .relation-row.with-status {
-    grid-template-columns: minmax(0, 1fr) 78px 28px;
-    gap: 8px;
-    padding-inline: 12px;
-  }
-
-  .relation-heading-status,
-  .relation-result {
-    display: none;
   }
 
   .entity-message-grid {

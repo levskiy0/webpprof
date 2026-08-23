@@ -30,25 +30,38 @@ const (
 type FindingCode string
 
 const (
-	FindingPossibleNPlusOne    FindingCode = "possible_n_plus_one"
+	// FindingPossibleNPlusOne reports repeated structurally equivalent queries.
+	FindingPossibleNPlusOne FindingCode = "possible_n_plus_one"
+	// FindingSQLDominatesRequest reports requests that spend most of their time in SQL.
 	FindingSQLDominatesRequest FindingCode = "sql_dominates_request"
+	// FindingSequentialHTTPCalls reports outbound calls that appear to run serially.
 	FindingSequentialHTTPCalls FindingCode = "sequential_http_calls"
+	// FindingCacheMissQueryBurst reports repeated cache misses followed by queries.
 	FindingCacheMissQueryBurst FindingCode = "cache_miss_query_burst"
-	FindingSlowMiddleware      FindingCode = "slow_middleware"
-	FindingSlowRequest         FindingCode = "slow_request"
-	FindingSlowQuery           FindingCode = "slow_query"
-	FindingSlowHTTPCall        FindingCode = "slow_http_call"
-	FindingFailedOperation     FindingCode = "failed_operation"
-	FindingHighCacheMissRate   FindingCode = "high_cache_miss_rate"
+	// FindingSlowMiddleware reports middleware above the built-in duration threshold.
+	FindingSlowMiddleware FindingCode = "slow_middleware"
+	// FindingSlowRequest reports requests above the built-in duration threshold.
+	FindingSlowRequest FindingCode = "slow_request"
+	// FindingSlowQuery reports queries above the built-in duration threshold.
+	FindingSlowQuery FindingCode = "slow_query"
+	// FindingSlowHTTPCall reports outbound calls above the built-in duration threshold.
+	FindingSlowHTTPCall FindingCode = "slow_http_call"
+	// FindingFailedOperation reports a related operation carrying an error or failed status.
+	FindingFailedOperation FindingCode = "failed_operation"
+	// FindingHighCacheMissRate reports request timelines dominated by cache misses.
+	FindingHighCacheMissRate FindingCode = "high_cache_miss_rate"
 )
 
 // FindingSeverity describes how strongly a finding should be surfaced.
 type FindingSeverity string
 
 const (
-	FindingSeverityInfo    FindingSeverity = "info"
+	// FindingSeverityInfo marks an informational optimization opportunity.
+	FindingSeverityInfo FindingSeverity = "info"
+	// FindingSeverityWarning marks a likely performance or reliability issue.
 	FindingSeverityWarning FindingSeverity = "warning"
-	FindingSeverityDanger  FindingSeverity = "danger"
+	// FindingSeverityDanger marks a failed or especially costly operation.
+	FindingSeverityDanger FindingSeverity = "danger"
 )
 
 // Finding is an actionable conclusion produced from a recorded request.

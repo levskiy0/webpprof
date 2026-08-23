@@ -1,19 +1,27 @@
+// Package gocache instruments github.com/levskiy0/go-cache operations and
+// locks as webpprof cache entries.
 package gocache
 
 import (
 	"context"
 	"time"
 
-	"github.com/levskiy0/webpprof"
 	cachecontract "github.com/levskiy0/go-cache/contract"
+	"github.com/levskiy0/webpprof"
 )
 
+// ProfilerGoCache implements webpprof.Integration for go-cache instances.
 type ProfilerGoCache struct {
 	Store string
 }
 
+// Cache aliases the go-cache facade accepted by Profile.
 type Cache = cachecontract.Cache
+
+// CacheDriver aliases the go-cache driver wrapped by the integration.
 type CacheDriver = cachecontract.Driver
+
+// Lock aliases the go-cache lock contract returned by instrumented drivers.
 type Lock = cachecontract.Lock
 
 type profiledCache struct {
@@ -29,6 +37,8 @@ type profiledCacheLock struct {
 	key   string
 }
 
+// New creates a go-cache integration. The first non-empty store name is shown
+// in captured entries; it defaults to "default".
 func New(stores ...string) ProfilerGoCache {
 	store := "default"
 	if len(stores) > 0 && stores[0] != "" {
@@ -37,10 +47,13 @@ func New(stores ...string) ProfilerGoCache {
 	return ProfilerGoCache{Store: store}
 }
 
+// Name returns the integration cache namespace.
 func (ProfilerGoCache) Name() string {
 	return "go-cache"
 }
 
+// Profile wraps cache so operations and locks are recorded. Wrapping is
+// idempotent for the same profiler.
 func (d ProfilerGoCache) Profile(scope webpprof.Scope, cache Cache) Cache {
 	p := scope.Profiler()
 	if p == nil || cache == nil {
@@ -54,10 +67,12 @@ func (d ProfilerGoCache) Profile(scope webpprof.Scope, cache Cache) Cache {
 	return &profiledCache{inner: cache, profiler: p, store: d.Store, ctx: context.Background()}
 }
 
+// Profile instruments cache with the default profiler.
 func Profile(cache Cache, stores ...string) Cache {
 	return webpprof.Profile(cache, New(stores...))
 }
 
+// ProfileWith instruments cache with an explicit profiler.
 func ProfileWith(profiler *webpprof.Profiler, cache Cache, stores ...string) Cache {
 	return webpprof.ProfileWith(profiler, cache, New(stores...))
 }

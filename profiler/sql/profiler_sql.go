@@ -1,3 +1,5 @@
+// Package sql wraps database/sql drivers and connectors so queries are recorded
+// without requiring changes to application query calls.
 package sql
 
 import (
@@ -10,6 +12,8 @@ import (
 	"github.com/levskiy0/webpprof"
 )
 
+// Config supplies connection metadata and optional non-executing EXPLAIN
+// behavior for captured SQL queries.
 type Config struct {
 	Connection     string
 	Driver         string
@@ -50,22 +54,28 @@ type sqlStmtProfiler struct {
 	query    string
 }
 
+// ProfilerSQLConnector implements webpprof.Integration for driver connectors.
 type ProfilerSQLConnector struct {
 	Config Config
 }
 
+// ProfilerSQLDriver implements webpprof.Integration for database drivers.
 type ProfilerSQLDriver struct {
 	Config Config
 }
 
+// NewConnector creates a connector integration. Only the first optional Config
+// is used.
 func NewConnector(configs ...Config) ProfilerSQLConnector {
 	return ProfilerSQLConnector{Config: firstConfig(configs)}
 }
 
+// Name returns the connector integration cache namespace.
 func (ProfilerSQLConnector) Name() string {
 	return "database-sql-connector"
 }
 
+// Profile wraps connector so returned connections record SQL operations.
 func (d ProfilerSQLConnector) Profile(scope webpprof.Scope, connector driver.Connector) driver.Connector {
 	p := scope.Profiler()
 	if p == nil || connector == nil {
@@ -77,14 +87,18 @@ func (d ProfilerSQLConnector) Profile(scope webpprof.Scope, connector driver.Con
 	return &sqlConnectorProfiler{inner: connector, profiler: p, config: d.Config}
 }
 
+// NewDriver creates a driver integration. Only the first optional Config is
+// used.
 func NewDriver(configs ...Config) ProfilerSQLDriver {
 	return ProfilerSQLDriver{Config: firstConfig(configs)}
 }
 
+// Name returns the driver integration cache namespace.
 func (ProfilerSQLDriver) Name() string {
 	return "database-sql-driver"
 }
 
+// Profile wraps dbDriver so opened connections record SQL operations.
 func (d ProfilerSQLDriver) Profile(scope webpprof.Scope, dbDriver driver.Driver) driver.Driver {
 	p := scope.Profiler()
 	if p == nil || dbDriver == nil {
@@ -96,18 +110,22 @@ func (d ProfilerSQLDriver) Profile(scope webpprof.Scope, dbDriver driver.Driver)
 	return &sqlDriverProfiler{inner: dbDriver, profiler: p, config: d.Config}
 }
 
+// ProfileConnector instruments connector with the default profiler.
 func ProfileConnector(connector driver.Connector, configs ...Config) driver.Connector {
 	return webpprof.Profile(connector, NewConnector(configs...))
 }
 
+// ProfileConnectorWith instruments connector with an explicit profiler.
 func ProfileConnectorWith(profiler *webpprof.Profiler, connector driver.Connector, configs ...Config) driver.Connector {
 	return webpprof.ProfileWith(profiler, connector, NewConnector(configs...))
 }
 
+// ProfileDriver instruments dbDriver with the default profiler.
 func ProfileDriver(dbDriver driver.Driver, configs ...Config) driver.Driver {
 	return webpprof.Profile(dbDriver, NewDriver(configs...))
 }
 
+// ProfileDriverWith instruments dbDriver with an explicit profiler.
 func ProfileDriverWith(profiler *webpprof.Profiler, dbDriver driver.Driver, configs ...Config) driver.Driver {
 	return webpprof.ProfileWith(profiler, dbDriver, NewDriver(configs...))
 }

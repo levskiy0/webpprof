@@ -18,12 +18,17 @@ const (
 	defaultDashboardTimeout = 1500 * time.Millisecond
 )
 
+// Router is the minimal HTTP routing contract required to mount the profiler.
+// Both http.ServeMux and routers exposing the same Handle method satisfy it.
 type Router interface {
 	Handle(string, http.Handler)
 }
 
+// Option configures a Profiler during construction.
 type Option func(*config)
 
+// RequestFilter decides whether an incoming request should be captured.
+// Returning false skips the request and all entities correlated with it.
 type RequestFilter func(*http.Request) bool
 
 // RequestRetentionFilter decides whether a completed request and all of its
@@ -181,6 +186,8 @@ func WithDisabledKinds(kinds ...Kind) Option {
 	}
 }
 
+// WithBasePath changes the URL prefix used by the dashboard and JSON API.
+// Empty paths and "/" leave the default /debug/webpprof prefix unchanged.
 func WithBasePath(path string) Option {
 	return func(c *config) {
 		path = "/" + strings.Trim(path, "/")
@@ -190,6 +197,8 @@ func WithBasePath(path string) Option {
 	}
 }
 
+// WithToken protects the dashboard and API with the supplied access token.
+// Start requires either a non-empty token or WithUnsafeUnauthenticatedAccess.
 func WithToken(token string) Option {
 	return func(c *config) { c.token = token }
 }
@@ -202,6 +211,8 @@ func WithUnsafeUnauthenticatedAccess() Option {
 	return func(c *config) { c.unsafeNoAuth = true }
 }
 
+// WithRetention sets how long recorded entries remain available. Non-positive
+// values leave the default retention unchanged.
 func WithRetention(retention time.Duration) Option {
 	return func(c *config) {
 		if retention > 0 {
@@ -210,6 +221,8 @@ func WithRetention(retention time.Duration) Option {
 	}
 }
 
+// WithMaxEvents bounds the number of entries kept in memory. Non-positive
+// values leave the default limit unchanged.
 func WithMaxEvents(maxEvents int) Option {
 	return func(c *config) {
 		if maxEvents > 0 {
@@ -218,6 +231,8 @@ func WithMaxEvents(maxEvents int) Option {
 	}
 }
 
+// WithMaxBytes bounds the approximate encoded size of entries kept in memory.
+// Non-positive values leave the default limit unchanged.
 func WithMaxBytes(maxBytes int64) Option {
 	return func(c *config) {
 		if maxBytes > 0 {
@@ -226,6 +241,8 @@ func WithMaxBytes(maxBytes int64) Option {
 	}
 }
 
+// WithBodyLimit limits captured HTTP request and response bodies. A zero limit
+// disables body capture; negative values leave the default unchanged.
 func WithBodyLimit(maxBytes int64) Option {
 	return func(c *config) {
 		if maxBytes >= 0 {
@@ -234,6 +251,8 @@ func WithBodyLimit(maxBytes int64) Option {
 	}
 }
 
+// WithStreamBuffer sets the per-subscriber live-event buffer size.
+// Non-positive values leave the default size unchanged.
 func WithStreamBuffer(size int) Option {
 	return func(c *config) {
 		if size > 0 {
@@ -242,6 +261,8 @@ func WithStreamBuffer(size int) Option {
 	}
 }
 
+// WithQueueStatsTimeout limits collection time for registered queue metrics.
+// Non-positive values leave the default timeout unchanged.
 func WithQueueStatsTimeout(timeout time.Duration) Option {
 	return func(c *config) {
 		if timeout > 0 {
@@ -260,10 +281,14 @@ func WithDashboardTimeout(timeout time.Duration) Option {
 	}
 }
 
+// WithSecureCookie controls the Secure attribute of the dashboard session
+// cookie. Enable it when the profiler is served over HTTPS.
 func WithSecureCookie(isSecure bool) Option {
 	return func(c *config) { c.secureCookie = isSecure }
 }
 
+// WithAllowedOrigins permits the listed browser origins to access profiler
+// endpoints. Blank origins are ignored.
 func WithAllowedOrigins(origins ...string) Option {
 	return func(c *config) {
 		for _, origin := range origins {
@@ -275,6 +300,8 @@ func WithAllowedOrigins(origins ...string) Option {
 	}
 }
 
+// WithRequestFilter appends a capture predicate. All configured predicates
+// must return true for a request to be recorded; nil predicates are ignored.
 func WithRequestFilter(filter RequestFilter) Option {
 	return func(c *config) {
 		if filter != nil {
@@ -283,12 +310,16 @@ func WithRequestFilter(filter RequestFilter) Option {
 	}
 }
 
+// WithExcludedRequests skips matching requests. Patterns may be paths, glob
+// paths, prefix patterns ending in /*, or "METHOD path" pairs.
 func WithExcludedRequests(patterns ...string) Option {
 	return func(c *config) {
 		c.excluded = append(c.excluded, parseRequestPatterns(patterns)...)
 	}
 }
 
+// ExcludingRequests builds a reusable RequestFilter that rejects matching
+// paths or "METHOD path" patterns.
 func ExcludingRequests(patterns ...string) RequestFilter {
 	excluded := parseRequestPatterns(patterns)
 	return func(request *http.Request) bool {

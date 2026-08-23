@@ -12,16 +12,22 @@ import (
 	"github.com/levskiy0/webpprof"
 )
 
+// BodyRecorder retains at most a configured prefix of response bytes while
+// reporting successful writes to the wrapped response path.
 type BodyRecorder struct {
 	limit     int64
 	body      []byte
 	truncated bool
 }
 
+// NewBodyRecorder creates a body recorder. Non-positive limits disable body
+// retention while preserving byte counts supplied to Message.
 func NewBodyRecorder(limit int64) *BodyRecorder {
 	return &BodyRecorder{limit: limit}
 }
 
+// Write retains data up to the configured limit and always reports the full
+// input length so it can be used as a passive tee.
 func (c *BodyRecorder) Write(data []byte) (int, error) {
 	if c == nil || c.limit <= 0 {
 		return len(data), nil
@@ -37,6 +43,8 @@ func (c *BodyRecorder) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
+// Message builds a safe HTTP message snapshot from retained bytes and headers.
+// Unsupported binary bodies are omitted.
 func (c *BodyRecorder) Message(headers stdlibhttp.Header, size int64) webpprof.HTTPMessage {
 	message := webpprof.HTTPMessage{Headers: headers.Clone(), ContentType: headers.Get("Content-Type"), Size: size}
 	if c == nil {
@@ -47,6 +55,8 @@ func (c *BodyRecorder) Message(headers stdlibhttp.Header, size int64) webpprof.H
 	return message
 }
 
+// SnapshotRequest reads and restores up to limit bytes from request.Body and
+// returns a redacted message snapshot. Callers must pass a non-nil request.
 func SnapshotRequest(request *stdlibhttp.Request, limit int64) webpprof.HTTPMessage {
 	message := webpprof.HTTPMessage{Headers: request.Header.Clone(), ContentType: request.Header.Get("Content-Type"), Size: request.ContentLength}
 	if limit <= 0 || request.Body == nil {

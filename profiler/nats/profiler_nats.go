@@ -20,9 +20,13 @@ type Config struct {
 // Client is the core NATS API wrapped by Profile. Retain the original
 // *nats.Conn for lifecycle and APIs outside this focused interface.
 type Client interface {
+	// Publish sends payload to subject.
 	Publish(string, []byte) error
+	// PublishMsg sends a prepared NATS message.
 	PublishMsg(*nats.Msg) error
+	// Subscribe registers a handler for subject.
 	Subscribe(string, nats.MsgHandler) (*nats.Subscription, error)
+	// QueueSubscribe registers a queue-group handler for subject.
 	QueueSubscribe(string, string, nats.MsgHandler) (*nats.Subscription, error)
 }
 
@@ -30,13 +34,18 @@ type Client interface {
 // correlation while preserving the wrapped core NATS API.
 type ProfiledClient interface {
 	Client
+	// PublishContext publishes while correlating the dispatch with ctx.
 	PublishContext(context.Context, string, []byte) error
 }
 
+// Profile wraps client with the default profiler. It returns nil for a nil
+// client and otherwise preserves core NATS operations.
 func Profile(client Client, configs ...Config) ProfiledClient {
 	return ProfileWith(webpprof.Default(), client, configs...)
 }
 
+// ProfileWith wraps client with p. When p is nil, operations still delegate to
+// client but no entries are recorded.
 func ProfileWith(p *webpprof.Profiler, client Client, configs ...Config) ProfiledClient {
 	if client == nil {
 		return nil

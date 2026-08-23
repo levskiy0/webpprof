@@ -14,6 +14,9 @@ import (
 var defaultProfiler atomic.Pointer[Profiler]
 var defaultProfilerMu sync.Mutex
 
+// Profiler records bounded diagnostic entries and serves the dashboard and API.
+// A process has at most one active default Profiler; call Close or Shutdown to
+// release it before constructing another.
 type Profiler struct {
 	config            config
 	store             *entryStore
@@ -31,6 +34,9 @@ type Profiler struct {
 	requestRemaining  atomic.Int64
 }
 
+// New creates the process-wide profiler and mounts its handlers on router. It
+// returns the existing default profiler when already initialized and panics if
+// router is nil on first initialization.
 func New(router Router, options ...Option) *Profiler {
 	defaultProfilerMu.Lock()
 	defer defaultProfilerMu.Unlock()
@@ -74,6 +80,8 @@ func validateAuthentication(c config) error {
 	return nil
 }
 
+// NewIf calls New only when enabled. It is useful for environment-controlled
+// setup and returns nil when disabled.
 func NewIf(enabled bool, router Router, options ...Option) *Profiler {
 	if !enabled {
 		return nil
@@ -81,18 +89,23 @@ func NewIf(enabled bool, router Router, options ...Option) *Profiler {
 	return New(router, options...)
 }
 
+// Default returns the active process-wide profiler, or nil when profiling is
+// not initialized.
 func Default() *Profiler {
 	return defaultProfiler.Load()
 }
 
+// Enabled reports whether a default profiler is active.
 func Enabled() bool {
 	return Default() != nil
 }
 
+// Enabled reports whether the receiver is non-nil.
 func (p *Profiler) Enabled() bool {
 	return p != nil
 }
 
+// BasePath returns the URL prefix under which dashboard handlers are mounted.
 func (p *Profiler) BasePath() string {
 	if p == nil {
 		return ""
@@ -100,6 +113,8 @@ func (p *Profiler) BasePath() string {
 	return p.config.basePath
 }
 
+// BodyLimit returns the maximum number of request or response body bytes
+// captured by HTTP integrations.
 func (p *Profiler) BodyLimit() int64 {
 	if p == nil {
 		return 0
@@ -107,11 +122,16 @@ func (p *Profiler) BodyLimit() int64 {
 	return p.config.bodyLimit
 }
 
+// ShouldCaptureRequest applies the default profiler's exclusions, filters,
+// sampling rate, and optional request limit.
 func ShouldCaptureRequest(request *http.Request) bool {
 	profiler := Default()
 	return profiler != nil && profiler.ShouldCaptureRequest(request)
 }
 
+// ShouldCaptureRequest applies this profiler's exclusions, filters, sampling
+// rate, and optional request limit. A successful call consumes one configured
+// request-limit slot.
 func (p *Profiler) ShouldCaptureRequest(request *http.Request) bool {
 	if p == nil || request == nil {
 		return false
@@ -141,10 +161,14 @@ func (p *Profiler) ShouldCaptureRequest(request *http.Request) bool {
 	return p.takeRequestCaptureSlot()
 }
 
+// NewID returns a random 128-bit lowercase hexadecimal identifier. It falls
+// back to a UTC timestamp only when the system random source fails.
 func NewID() string {
 	return newID()
 }
 
+// Close immediately stops an owned server, closes storage, and clears the
+// default profiler. It is safe to call repeatedly; a nil receiver is a no-op.
 func (p *Profiler) Close() error {
 	if p == nil {
 		return nil
@@ -167,6 +191,8 @@ func (p *Profiler) Close() error {
 	return serverErr
 }
 
+// LogRequest records a completed request and stores its related entities as
+// individually correlated entries. Retention filters may discard the request.
 func (p *Profiler) LogRequest(request Request) {
 	if p == nil {
 		return
@@ -232,6 +258,7 @@ func (p *Profiler) LogRequest(request Request) {
 	p.record(KindRequest, request.Meta, request)
 }
 
+// LogQuery records a database query and captures a callsite when configured.
 func (p *Profiler) LogQuery(query Query) {
 	if p == nil {
 		return
@@ -239,6 +266,8 @@ func (p *Profiler) LogQuery(query Query) {
 	p.prepareQuery(&query)
 	p.record(KindQuery, query.Meta, query)
 }
+
+// LogEmail records an outgoing email and captures a callsite when configured.
 func (p *Profiler) LogEmail(email Email) {
 	if p == nil {
 		return
@@ -246,6 +275,8 @@ func (p *Profiler) LogEmail(email Email) {
 	p.prepareCallsite(KindEmail, &email.Callsite)
 	p.record(KindEmail, email.Meta, email)
 }
+
+// LogCache records a cache operation and captures a callsite when configured.
 func (p *Profiler) LogCache(cache Cache) {
 	if p == nil {
 		return
@@ -253,6 +284,8 @@ func (p *Profiler) LogCache(cache Cache) {
 	p.prepareCallsite(KindCache, &cache.Callsite)
 	p.record(KindCache, cache.Meta, cache)
 }
+
+// LogJob records a background job and captures a callsite when configured.
 func (p *Profiler) LogJob(job Job) {
 	if p == nil {
 		return
@@ -260,7 +293,12 @@ func (p *Profiler) LogJob(job Job) {
 	p.prepareCallsite(KindJob, &job.Callsite)
 	p.record(KindJob, job.Meta, job)
 }
+
+// LogLog records a structured application log.
 func (p *Profiler) LogLog(log Log) { p.record(KindLog, log.Meta, log) }
+
+// LogHTTPCall records an outbound HTTP call and captures a callsite when
+// configured.
 func (p *Profiler) LogHTTPCall(call HTTPCall) {
 	if p == nil {
 		return
@@ -268,6 +306,8 @@ func (p *Profiler) LogHTTPCall(call HTTPCall) {
 	p.prepareCallsite(KindHTTPCall, &call.Callsite)
 	p.record(KindHTTPCall, call.Meta, call)
 }
+
+// LogSchedule records a scheduled task and captures a callsite when configured.
 func (p *Profiler) LogSchedule(schedule Schedule) {
 	if p == nil {
 		return
@@ -275,9 +315,13 @@ func (p *Profiler) LogSchedule(schedule Schedule) {
 	p.prepareCallsite(KindSchedule, &schedule.Callsite)
 	p.record(KindSchedule, schedule.Meta, schedule)
 }
+
+// LogException records an application error or recovered panic.
 func (p *Profiler) LogException(exception Exception) {
 	p.record(KindException, exception.Meta, exception)
 }
+
+// LogEvent records a custom application event.
 func (p *Profiler) LogEvent(event Event) { p.record(KindEvent, event.Meta, event) }
 
 // LogMiddleware records a standalone or explicitly correlated middleware
@@ -286,16 +330,39 @@ func (p *Profiler) LogMiddleware(middleware Middleware) {
 	p.record(KindMiddleware, middleware.Meta, middleware)
 }
 
-func LogRequest(request Request)       { withDefault(func(p *Profiler) { p.LogRequest(request) }) }
-func LogQuery(query Query)             { withDefault(func(p *Profiler) { p.LogQuery(query) }) }
-func LogEmail(email Email)             { withDefault(func(p *Profiler) { p.LogEmail(email) }) }
-func LogCache(cache Cache)             { withDefault(func(p *Profiler) { p.LogCache(cache) }) }
-func LogJob(job Job)                   { withDefault(func(p *Profiler) { p.LogJob(job) }) }
-func LogLog(log Log)                   { withDefault(func(p *Profiler) { p.LogLog(log) }) }
-func LogHTTPCall(call HTTPCall)        { withDefault(func(p *Profiler) { p.LogHTTPCall(call) }) }
-func LogSchedule(schedule Schedule)    { withDefault(func(p *Profiler) { p.LogSchedule(schedule) }) }
-func LogException(exception Exception) { withDefault(func(p *Profiler) { p.LogException(exception) }) }
-func LogEvent(event Event)             { withDefault(func(p *Profiler) { p.LogEvent(event) }) }
+// LogRequest records a completed request with the default profiler.
+func LogRequest(request Request) { withDefault(func(p *Profiler) { p.LogRequest(request) }) }
+
+// LogQuery records a database query with the default profiler.
+func LogQuery(query Query) { withDefault(func(p *Profiler) { p.LogQuery(query) }) }
+
+// LogEmail records an outgoing email with the default profiler.
+func LogEmail(email Email) { withDefault(func(p *Profiler) { p.LogEmail(email) }) }
+
+// LogCache records a cache operation with the default profiler.
+func LogCache(cache Cache) { withDefault(func(p *Profiler) { p.LogCache(cache) }) }
+
+// LogJob records a background job with the default profiler.
+func LogJob(job Job) { withDefault(func(p *Profiler) { p.LogJob(job) }) }
+
+// LogLog records a structured log with the default profiler.
+func LogLog(log Log) { withDefault(func(p *Profiler) { p.LogLog(log) }) }
+
+// LogHTTPCall records an outbound HTTP call with the default profiler.
+func LogHTTPCall(call HTTPCall) { withDefault(func(p *Profiler) { p.LogHTTPCall(call) }) }
+
+// LogSchedule records a scheduled task with the default profiler.
+func LogSchedule(schedule Schedule) {
+	withDefault(func(p *Profiler) { p.LogSchedule(schedule) })
+}
+
+// LogException records an application exception with the default profiler.
+func LogException(exception Exception) {
+	withDefault(func(p *Profiler) { p.LogException(exception) })
+}
+
+// LogEvent records a custom event with the default profiler.
+func LogEvent(event Event) { withDefault(func(p *Profiler) { p.LogEvent(event) }) }
 
 // LogMiddleware records middleware using the default profiler.
 func LogMiddleware(middleware Middleware) {

@@ -1,3 +1,5 @@
+// Package slog wraps a log/slog Handler and mirrors accepted records into
+// webpprof while preserving the original handler chain.
 package slog
 
 import (
@@ -14,16 +16,21 @@ type profiledSlogHandler struct {
 	groups   []string
 }
 
+// ProfilerSlog implements webpprof.Integration for slog handlers.
 type ProfilerSlog struct{}
 
+// New creates a slog handler integration.
 func New() ProfilerSlog {
 	return ProfilerSlog{}
 }
 
+// Name returns the integration cache namespace.
 func (ProfilerSlog) Name() string {
 	return "slog"
 }
 
+// Profile wraps handler so accepted records, attributes, and groups are mirrored
+// into webpprof. Existing wrappers for the same profiler are reused.
 func (ProfilerSlog) Profile(scope webpprof.Scope, handler stdlibslog.Handler) stdlibslog.Handler {
 	p := scope.Profiler()
 	if p == nil || handler == nil {
@@ -35,10 +42,12 @@ func (ProfilerSlog) Profile(scope webpprof.Scope, handler stdlibslog.Handler) st
 	return &profiledSlogHandler{inner: handler, profiler: p}
 }
 
+// Profile instruments handler with the default profiler.
 func Profile(handler stdlibslog.Handler) stdlibslog.Handler {
 	return webpprof.Profile(handler, New())
 }
 
+// ProfileWith instruments handler with an explicit profiler.
 func ProfileWith(profiler *webpprof.Profiler, handler stdlibslog.Handler) stdlibslog.Handler {
 	return webpprof.ProfileWith(profiler, handler, New())
 }

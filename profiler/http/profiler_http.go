@@ -1,3 +1,5 @@
+// Package http provides inbound net/http middleware and an outbound transport
+// wrapper that correlate HTTP activity with webpprof request captures.
 package http
 
 import (
@@ -12,16 +14,21 @@ type profiledRoundTripper struct {
 	profiler *webpprof.Profiler
 }
 
+// ProfilerHTTP implements webpprof.Integration for HTTP round trippers.
 type ProfilerHTTP struct{}
 
+// New creates an outbound HTTP transport integration.
 func New() ProfilerHTTP {
 	return ProfilerHTTP{}
 }
 
+// Name returns the integration cache namespace.
 func (ProfilerHTTP) Name() string {
 	return "http-client"
 }
 
+// Profile wraps transport so outbound requests are recorded. A nil transport
+// is treated as http.DefaultTransport.
 func (ProfilerHTTP) Profile(scope webpprof.Scope, transport stdlibhttp.RoundTripper) stdlibhttp.RoundTripper {
 	p := scope.Profiler()
 	if transport == nil {
@@ -36,10 +43,12 @@ func (ProfilerHTTP) Profile(scope webpprof.Scope, transport stdlibhttp.RoundTrip
 	return &profiledRoundTripper{inner: transport, profiler: p}
 }
 
+// ProfileTransport instruments transport with the default profiler.
 func ProfileTransport(transport stdlibhttp.RoundTripper) stdlibhttp.RoundTripper {
 	return webpprof.Profile(transport, New())
 }
 
+// ProfileTransportWith instruments transport with an explicit profiler.
 func ProfileTransportWith(profiler *webpprof.Profiler, transport stdlibhttp.RoundTripper) stdlibhttp.RoundTripper {
 	return webpprof.ProfileWith(profiler, transport, New())
 }

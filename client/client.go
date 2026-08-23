@@ -31,6 +31,7 @@ type APIError struct {
 	Message    string
 }
 
+// Error formats the HTTP status and bounded server message.
 func (e *APIError) Error() string {
 	return fmt.Sprintf("webpprof API returned status %d: %s", e.StatusCode, e.Message)
 }

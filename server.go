@@ -11,6 +11,9 @@ import (
 	"time"
 )
 
+// Start runs the profiler dashboard on a dedicated HTTP server. The address may
+// use port 0 for automatic allocation. Authentication must be configured with
+// WithToken or explicitly disabled with WithUnsafeUnauthenticatedAccess.
 func Start(addr string, options ...Option) (*Profiler, error) {
 	defaultProfilerMu.Lock()
 	if profiler := defaultProfiler.Load(); profiler != nil {
@@ -60,6 +63,7 @@ func Start(addr string, options ...Option) (*Profiler, error) {
 	return profiler, nil
 }
 
+// Shutdown gracefully stops the default profiler server and closes storage.
 func Shutdown(ctx context.Context) error {
 	profiler := Default()
 	if profiler == nil {
@@ -68,6 +72,8 @@ func Shutdown(ctx context.Context) error {
 	return profiler.Shutdown(ctx)
 }
 
+// URL returns the dashboard URL of the default dedicated server, or an empty
+// string when the profiler is mounted into an application router.
 func URL() string {
 	profiler := Default()
 	if profiler == nil {
@@ -76,6 +82,8 @@ func URL() string {
 	return profiler.URL()
 }
 
+// URL returns this profiler's dedicated-server dashboard URL, or an empty
+// string when it does not own a server.
 func (p *Profiler) URL() string {
 	if p == nil {
 		return ""
@@ -89,6 +97,8 @@ func (p *Profiler) URL() string {
 	return "http://" + addr + strings.TrimRight(p.BasePath(), "/") + "/"
 }
 
+// Shutdown gracefully stops this profiler's owned server, closes storage, and
+// clears the default profiler. A nil receiver is a no-op.
 func (p *Profiler) Shutdown(ctx context.Context) error {
 	if p == nil {
 		return nil

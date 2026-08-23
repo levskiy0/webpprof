@@ -17,6 +17,8 @@ const (
 	gcCyclesMetric     = "/gc/cycles/total:gc-cycles"
 )
 
+// RuntimeStats returns a point-in-time snapshot of selected runtime/metrics
+// values and profiler uptime. A nil profiler returns a zero snapshot.
 func (p *Profiler) RuntimeStats() RuntimeStats {
 	if p == nil {
 		return RuntimeStats{}

@@ -1,3 +1,5 @@
+// Package schedule wraps context-aware scheduled tasks and records their
+// duration, success, and panics.
 package schedule
 
 import (
@@ -8,20 +10,26 @@ import (
 	"github.com/levskiy0/webpprof"
 )
 
+// Task is a context-aware scheduled function supported by this integration.
 type Task func(context.Context)
 
+// ProfilerSchedule implements webpprof.Integration for one named Task.
 type ProfilerSchedule struct {
 	NameValue string
 }
 
+// New creates a schedule integration using name in captured entries.
 func New(name string) ProfilerSchedule {
 	return ProfilerSchedule{NameValue: name}
 }
 
+// Name returns the integration cache namespace, including the task name.
 func (d ProfilerSchedule) Name() string {
 	return "schedule:" + d.NameValue
 }
 
+// Profile wraps task so executions and panics are recorded. Panics are rethrown
+// after recording.
 func (d ProfilerSchedule) Profile(scope webpprof.Scope, task Task) Task {
 	p := scope.Profiler()
 	if p == nil || task == nil {
@@ -43,10 +51,12 @@ func (d ProfilerSchedule) Profile(scope webpprof.Scope, task Task) Task {
 	}
 }
 
+// Profile instruments task with the default profiler.
 func Profile(name string, task Task) Task {
 	return webpprof.Profile(task, New(name))
 }
 
+// ProfileWith instruments task with an explicit profiler.
 func ProfileWith(profiler *webpprof.Profiler, name string, task Task) Task {
 	return webpprof.ProfileWith(profiler, task, New(name))
 }

@@ -5,22 +5,36 @@ import (
 	"time"
 )
 
+// Kind identifies the schema stored in an Entry.
 type Kind string
 
 const (
-	KindRequest    Kind = "request"
-	KindQuery      Kind = "query"
-	KindEmail      Kind = "email"
-	KindCache      Kind = "cache"
-	KindJob        Kind = "job"
-	KindLog        Kind = "log"
-	KindHTTPCall   Kind = "http_call"
-	KindSchedule   Kind = "schedule"
-	KindException  Kind = "exception"
-	KindEvent      Kind = "event"
+	// KindRequest identifies an inbound HTTP request.
+	KindRequest Kind = "request"
+	// KindQuery identifies a database query.
+	KindQuery Kind = "query"
+	// KindEmail identifies an outgoing email.
+	KindEmail Kind = "email"
+	// KindCache identifies a cache operation.
+	KindCache Kind = "cache"
+	// KindJob identifies a queued job.
+	KindJob Kind = "job"
+	// KindLog identifies a structured application log.
+	KindLog Kind = "log"
+	// KindHTTPCall identifies an outbound HTTP request.
+	KindHTTPCall Kind = "http_call"
+	// KindSchedule identifies a scheduled task execution.
+	KindSchedule Kind = "schedule"
+	// KindException identifies a captured error or panic.
+	KindException Kind = "exception"
+	// KindEvent identifies a custom application event.
+	KindEvent Kind = "event"
+	// KindMiddleware identifies one inbound middleware invocation.
 	KindMiddleware Kind = "middleware"
 )
 
+// Meta contains correlation, timing, process, and tag data shared by all
+// profiler entities.
 type Meta struct {
 	ID              string            `json:"id,omitempty"`
 	RequestID       string            `json:"request_id,omitempty"`
@@ -33,6 +47,8 @@ type Meta struct {
 	Tags            map[string]string `json:"tags,omitempty"`
 }
 
+// HTTPMessage is a size-aware snapshot of HTTP headers and an optional body.
+// Truncated reports whether Body was shortened by the configured body limit.
 type HTTPMessage struct {
 	Headers     map[string][]string `json:"headers,omitempty"`
 	ContentType string              `json:"content_type,omitempty"`
@@ -41,6 +57,8 @@ type HTTPMessage struct {
 	Truncated   bool                `json:"truncated,omitempty"`
 }
 
+// Request describes an inbound HTTP exchange and may temporarily contain
+// related entities before LogRequest stores them as individually linked entries.
 type Request struct {
 	Meta
 	Method       string       `json:"method"`
@@ -69,6 +87,7 @@ type Request struct {
 	Middlewares  []Middleware `json:"middlewares,omitempty"`
 }
 
+// RequestResult supplies response metadata when a RequestCapture is finished.
 type RequestResult struct {
 	Status       int
 	ResponseSize int64
@@ -76,6 +95,8 @@ type RequestResult struct {
 	Error        string
 }
 
+// Query describes a database operation, including its SQL, timing, result, and
+// optional source callsite or EXPLAIN plan.
 type Query struct {
 	Meta
 	Connection   string        `json:"connection,omitempty"`
@@ -108,11 +129,13 @@ type QueryPlan struct {
 	Error    string        `json:"error,omitempty"`
 }
 
+// Address identifies one email sender or recipient.
 type Address struct {
 	Name  string `json:"name,omitempty"`
 	Email string `json:"email"`
 }
 
+// Email describes an outgoing email delivery attempt.
 type Email struct {
 	Meta
 	Transport string        `json:"transport,omitempty"`
@@ -128,6 +151,7 @@ type Email struct {
 	Error     string        `json:"error,omitempty"`
 }
 
+// Cache describes a cache read, write, invalidation, or lock operation.
 type Cache struct {
 	Meta
 	Store     string        `json:"store,omitempty"`
@@ -142,6 +166,7 @@ type Cache struct {
 	Error     string        `json:"error,omitempty"`
 }
 
+// Argument is a redacted, size-aware representation of a job argument.
 type Argument struct {
 	Name      string `json:"name,omitempty"`
 	Type      string `json:"type,omitempty"`
@@ -150,6 +175,7 @@ type Argument struct {
 	Truncated bool   `json:"truncated,omitempty"`
 }
 
+// Job describes the enqueueing or execution state of a background job.
 type Job struct {
 	Meta
 	Name        string        `json:"name"`
@@ -165,6 +191,7 @@ type Job struct {
 	Error       string        `json:"error,omitempty"`
 }
 
+// Log describes one structured application log record.
 type Log struct {
 	Meta
 	Level   string         `json:"level,omitempty"`
@@ -173,6 +200,7 @@ type Log struct {
 	Stack   string         `json:"stack,omitempty"`
 }
 
+// HTTPCall describes an outbound HTTP exchange.
 type HTTPCall struct {
 	Meta
 	Method       string        `json:"method"`
@@ -185,6 +213,7 @@ type HTTPCall struct {
 	Error        string        `json:"error,omitempty"`
 }
 
+// Schedule describes one scheduled task invocation and its outcome.
 type Schedule struct {
 	Meta
 	Name      string        `json:"name"`
@@ -196,6 +225,7 @@ type Schedule struct {
 	Panic     string        `json:"panic,omitempty"`
 }
 
+// Exception describes a captured error or recovered panic with an optional stack.
 type Exception struct {
 	Meta
 	Type    string `json:"type,omitempty"`
@@ -203,6 +233,7 @@ type Exception struct {
 	Stack   string `json:"stack,omitempty"`
 }
 
+// Event describes a custom domain or application event.
 type Event struct {
 	Meta
 	Kind    string         `json:"kind"`
@@ -223,6 +254,8 @@ type Middleware struct {
 	Error string `json:"error,omitempty"`
 }
 
+// Entry is the normalized envelope returned by the profiler API and storage
+// implementations. Data contains the JSON form associated with Kind.
 type Entry struct {
 	Cursor          uint64            `json:"cursor"`
 	ID              string            `json:"id"`
@@ -239,6 +272,7 @@ type Entry struct {
 	Data            json.RawMessage   `json:"data"`
 }
 
+// Stats reports current profiler capacity, retention, and storage state.
 type Stats struct {
 	Events        int     `json:"events"`
 	Bytes         int64   `json:"bytes"`
@@ -256,6 +290,7 @@ type Stats struct {
 	DisabledKinds []Kind  `json:"disabled_kinds,omitempty"`
 }
 
+// RuntimeStats is a point-in-time snapshot of selected Go runtime metrics.
 type RuntimeStats struct {
 	RecordedAt       time.Time `json:"recorded_at"`
 	UptimeNS         int64     `json:"uptime_ns"`

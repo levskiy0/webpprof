@@ -1,3 +1,5 @@
+// Package zap wraps a zapcore.Core and mirrors accepted structured log entries
+// into webpprof while preserving the original core.
 package zap
 
 import (
@@ -7,6 +9,7 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
+// ProfilerZap implements webpprof.Integration for zap cores.
 type ProfilerZap struct{}
 
 type profiledZapCore struct {
@@ -15,14 +18,18 @@ type profiledZapCore struct {
 	fields   []zapcore.Field
 }
 
+// New creates a zap core integration.
 func New() ProfilerZap {
 	return ProfilerZap{}
 }
 
+// Name returns the integration cache namespace.
 func (ProfilerZap) Name() string {
 	return "zap"
 }
 
+// Profile wraps core so accepted entries and structured fields are mirrored into
+// webpprof. Existing wrappers for the same profiler are reused.
 func (ProfilerZap) Profile(scope webpprof.Scope, core zapcore.Core) zapcore.Core {
 	p := scope.Profiler()
 	if p == nil || core == nil {
@@ -34,10 +41,12 @@ func (ProfilerZap) Profile(scope webpprof.Scope, core zapcore.Core) zapcore.Core
 	return &profiledZapCore{inner: core, profiler: p}
 }
 
+// Profile instruments core with the default profiler.
 func Profile(core zapcore.Core) zapcore.Core {
 	return webpprof.Profile(core, New())
 }
 
+// ProfileWith instruments core with an explicit profiler.
 func ProfileWith(profiler *webpprof.Profiler, core zapcore.Core) zapcore.Core {
 	return webpprof.ProfileWith(profiler, core, New())
 }

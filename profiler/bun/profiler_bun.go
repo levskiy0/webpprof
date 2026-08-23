@@ -1,3 +1,5 @@
+// Package bun records queries executed through uptrace/bun as webpprof query
+// entries while preserving Bun's existing hooks.
 package bun
 
 import (
@@ -9,6 +11,7 @@ import (
 	"github.com/uptrace/bun"
 )
 
+// ProfilerBun implements webpprof.Integration for Bun databases.
 type ProfilerBun struct {
 	Config Config
 }
@@ -25,12 +28,14 @@ type queryTrace struct {
 	callsite  []webpprof.SourceFrame
 }
 
+// Config supplies connection metadata shown beside captured Bun queries.
 type Config struct {
 	Connection string
 	Driver     string
 	Database   string
 }
 
+// New creates a Bun integration. Only the first optional Config is used.
 func New(configs ...Config) ProfilerBun {
 	var config Config
 	if len(configs) > 0 {
@@ -39,10 +44,13 @@ func New(configs ...Config) ProfilerBun {
 	return ProfilerBun{Config: config}
 }
 
+// Name returns the integration cache namespace.
 func (ProfilerBun) Name() string {
 	return "bun"
 }
 
+// Profile returns a Bun database with a webpprof query hook. Wrappers are
+// cached per database and profiler scope.
 func (d ProfilerBun) Profile(scope webpprof.Scope, db *bun.DB) *bun.DB {
 	p := scope.Profiler()
 	if p == nil || db == nil {
@@ -60,10 +68,12 @@ func (d ProfilerBun) Profile(scope webpprof.Scope, db *bun.DB) *bun.DB {
 	return profiled
 }
 
+// Profile instruments db with the default profiler.
 func Profile(db *bun.DB, configs ...Config) *bun.DB {
 	return webpprof.Profile(db, New(configs...))
 }
 
+// ProfileWith instruments db with an explicit profiler.
 func ProfileWith(profiler *webpprof.Profiler, db *bun.DB, configs ...Config) *bun.DB {
 	return webpprof.ProfileWith(profiler, db, New(configs...))
 }

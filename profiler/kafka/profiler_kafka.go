@@ -21,18 +21,24 @@ type Config struct {
 
 // Writer is the kafka-go producer method wrapped by ProfileWriter.
 type Writer interface {
+	// WriteMessages writes one or more messages using ctx.
 	WriteMessages(context.Context, ...kafka.Message) error
 }
 
 // Reader is the kafka-go consumer method wrapped by ProfileReader.
 type Reader interface {
+	// ReadMessage waits for and returns the next message using ctx.
 	ReadMessage(context.Context) (kafka.Message, error)
 }
 
+// ProfileWriter wraps writer with the default profiler and records each
+// producer attempt as a job dispatch.
 func ProfileWriter(writer Writer, configs ...Config) Writer {
 	return ProfileWriterWith(webpprof.Default(), writer, configs...)
 }
 
+// ProfileWriterWith wraps writer with p. Nil profilers or writers are returned
+// unchanged.
 func ProfileWriterWith(p *webpprof.Profiler, writer Writer, configs ...Config) Writer {
 	if p == nil || writer == nil {
 		return writer
@@ -40,10 +46,14 @@ func ProfileWriterWith(p *webpprof.Profiler, writer Writer, configs ...Config) W
 	return &profiledWriter{inner: writer, profiler: p, config: firstConfig(configs)}
 }
 
+// ProfileReader wraps reader with the default profiler and records each
+// consumed message as a job.
 func ProfileReader(reader Reader, configs ...Config) Reader {
 	return ProfileReaderWith(webpprof.Default(), reader, configs...)
 }
 
+// ProfileReaderWith wraps reader with p. Nil profilers or readers are returned
+// unchanged.
 func ProfileReaderWith(p *webpprof.Profiler, reader Reader, configs ...Config) Reader {
 	if p == nil || reader == nil {
 		return reader

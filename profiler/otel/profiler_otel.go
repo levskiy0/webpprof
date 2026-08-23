@@ -1,3 +1,5 @@
+// Package otel converts selected OpenTelemetry spans into correlated webpprof
+// requests, queries, cache operations, jobs, HTTP calls, and custom events.
 package otel
 
 import (
@@ -13,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// ProfilerOTel implements webpprof.Integration for SDK tracer providers.
 type ProfilerOTel struct{}
 
 type otelProfilerProcessor struct {
@@ -20,14 +23,18 @@ type otelProfilerProcessor struct {
 	roots    sync.Map
 }
 
+// New creates an OpenTelemetry tracer-provider integration.
 func New() ProfilerOTel {
 	return ProfilerOTel{}
 }
 
+// Name returns the integration cache namespace.
 func (ProfilerOTel) Name() string {
 	return "otel"
 }
 
+// Profile registers one span processor on provider for the current profiler
+// scope. Repeated calls for the same provider are idempotent.
 func (ProfilerOTel) Profile(scope webpprof.Scope, provider *sdktrace.TracerProvider) *sdktrace.TracerProvider {
 	p := scope.Profiler()
 	if p == nil || provider == nil {
@@ -39,18 +46,24 @@ func (ProfilerOTel) Profile(scope webpprof.Scope, provider *sdktrace.TracerProvi
 	return provider
 }
 
+// Profile instruments provider with the default profiler.
 func Profile(provider *sdktrace.TracerProvider) *sdktrace.TracerProvider {
 	return webpprof.Profile(provider, New())
 }
 
+// ProfileWith instruments provider with an explicit profiler.
 func ProfileWith(profiler *webpprof.Profiler, provider *sdktrace.TracerProvider) *sdktrace.TracerProvider {
 	return webpprof.ProfileWith(profiler, provider, New())
 }
 
+// SpanProcessor returns a processor for the default profiler, or nil when no
+// profiler is active.
 func SpanProcessor() sdktrace.SpanProcessor {
 	return NewSpanProcessor(webpprof.Default())
 }
 
+// NewSpanProcessor returns a processor that mirrors supported ended spans into
+// profiler. A nil profiler returns nil.
 func NewSpanProcessor(profiler *webpprof.Profiler) sdktrace.SpanProcessor {
 	if profiler == nil {
 		return nil
