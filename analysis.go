@@ -1,6 +1,7 @@
 package webpprof
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -952,7 +953,7 @@ func failedOperationFindings(entries []Entry, includeExecutionRoots bool) []Find
 			label, detail = "request", strings.TrimSpace(request.Method+" "+request.Path)
 		case KindQuery:
 			var query Query
-			if json.Unmarshal(entry.Data, &query) != nil || query.Error == "" {
+			if json.Unmarshal(entry.Data, &query) != nil || query.Error == "" || expectedEmptyQueryResult(query.Error) {
 				continue
 			}
 			label, detail = "query", query.SQL
@@ -1037,6 +1038,10 @@ func failedOperationFindings(entries []Entry, includeExecutionRoots bool) []Find
 		})
 	}
 	return findings
+}
+
+func expectedEmptyQueryResult(errorText string) bool {
+	return strings.TrimSpace(errorText) == sql.ErrNoRows.Error()
 }
 
 func cacheMissRateFinding(caches []analyzedCache) (Finding, bool) {

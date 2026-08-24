@@ -1,6 +1,7 @@
 package webpprof
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -551,6 +552,33 @@ func TestAnalyzeExecutionReportsFailedCoreOperations(t *testing.T) {
 	for _, id := range []string{"failed-request", "failed-query", "failed-cache", "failed-event", "failed-middleware", "exception"} {
 		if !ids[id] {
 			t.Errorf("missing failed-operation finding for %s: %+v", id, analysis.Findings)
+		}
+	}
+}
+
+func TestAnalyzeRequestDoesNotReportSQLNoRowsAsFailedQuery(t *testing.T) {
+	profiler := newProfiler()
+	t.Cleanup(func() { _ = profiler.Close() })
+	startedAt := time.Now().UTC()
+	profiler.LogRequest(Request{
+		Meta:   Meta{ID: "empty-query-request", StartedAt: startedAt, Duration: 20 * time.Millisecond},
+		Method: http.MethodGet,
+		Path:   "/games/7/review",
+		Status: http.StatusOK,
+		Queries: []Query{{
+			Meta:  Meta{ID: "empty-review", ParentID: "empty-query-request", StartedAt: startedAt, Duration: time.Millisecond},
+			SQL:   "SELECT id FROM game_reviews WHERE game_id = 7 AND player_id = 3",
+			Error: sql.ErrNoRows.Error(),
+		}},
+	})
+
+	analysis, ok := profiler.AnalyzeRequest("empty-query-request")
+	if !ok {
+		t.Fatal("AnalyzeRequest() did not find retained request")
+	}
+	for _, finding := range analysis.Findings {
+		if finding.Code == FindingFailedOperation && finding.EntryID == "empty-review" {
+			t.Fatalf("sql.ErrNoRows produced failed-query finding: %+v", finding)
 		}
 	}
 }

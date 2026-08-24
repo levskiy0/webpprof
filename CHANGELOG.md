@@ -3,6 +3,13 @@
 All notable changes to webpprof are documented here. Releases follow semantic
 versioning and are published from `v*` Git tags.
 
+## 0.6.1 - 2026-08-25
+
+### Fixed
+
+- Treat the standard `sql.ErrNoRows` result as an expected empty single-row
+  lookup instead of reporting it as a failed query in automatic analysis.
+
 ## 0.6.0 - 2026-08-25
 
 ### Changed
