@@ -294,14 +294,25 @@ type Event struct {
 	Error   string         `json:"error,omitempty"`
 }
 
-// Middleware describes one named HTTP middleware invocation. Duration is
-// inclusive: it contains the time spent in the middleware and downstream
-// handlers.
+// MiddlewareWorkSpan identifies one contiguous interval in which middleware
+// code, rather than its downstream handler, was executing.
+type MiddlewareWorkSpan struct {
+	Offset   time.Duration `json:"offset_ns,omitempty"`
+	Duration time.Duration `json:"duration_ns"`
+}
+
+// Middleware describes one named HTTP middleware invocation. Duration is the
+// complete invocation span, including downstream handlers. WorkDuration is the
+// measured time spent by the middleware itself before, between, and after calls
+// to the downstream handler. Operations started by the middleware, such as SQL
+// queries and HTTP calls, remain part of WorkDuration.
 type Middleware struct {
 	Meta
-	Name  string `json:"name"`
-	State string `json:"state,omitempty"`
-	Error string `json:"error,omitempty"`
+	Name         string               `json:"name"`
+	State        string               `json:"state,omitempty"`
+	WorkDuration *time.Duration       `json:"work_duration_ns,omitempty"`
+	WorkSpans    []MiddlewareWorkSpan `json:"work_spans,omitempty"`
+	Error        string               `json:"error,omitempty"`
 }
 
 // Entry is the normalized envelope returned by the profiler API and storage

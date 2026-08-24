@@ -92,20 +92,34 @@ func ProfileMiddlewareWith(p *webpprof.Profiler, name string, middleware gin.Han
 		return middleware
 	}
 	return func(c *gin.Context) {
+		startedAt := time.Now()
+		entryContext := c.Request.Context()
+		previousParentID := webpprof.ParentEntryIDFromContext(entryContext)
 		invocation := webpprof.Middleware{
-			Meta:  webpprof.Meta{StartedAt: time.Now().UTC()},
+			Meta: webpprof.Meta{
+				ID:        webpprof.NewID(),
+				ParentID:  previousParentID,
+				StartedAt: startedAt.UTC(),
+			},
 			Name:  name,
 			State: "completed",
 		}
+		originalRequest := c.Request
+		c.Request = c.Request.WithContext(webpprof.WithParentEntry(entryContext, invocation.ID))
 		defer func() {
-			invocation.Duration = time.Since(invocation.StartedAt)
+			invocation.Duration = time.Since(startedAt)
+			if previousParentID == "" {
+				c.Request = originalRequest
+			} else {
+				c.Request = c.Request.WithContext(webpprof.WithParentEntry(c.Request.Context(), previousParentID))
+			}
 			if recovered := recover(); recovered != nil {
 				invocation.State = "panicked"
 				invocation.Error = fmt.Sprint(recovered)
-				p.LogMiddlewareContext(c.Request.Context(), invocation)
+				p.LogMiddlewareContext(entryContext, invocation)
 				panic(recovered)
 			}
-			p.LogMiddlewareContext(c.Request.Context(), invocation)
+			p.LogMiddlewareContext(entryContext, invocation)
 		}()
 		middleware(c)
 	}

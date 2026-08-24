@@ -193,7 +193,7 @@ for the annotated wiring, automatic behavior, routes, and configuration.
 | Entity | Automatic profilers | Examples of recorded data |
 | --- | --- | --- |
 | HTTP request | `http`, Gin, Chi, Echo, Fiber, gRPC | Route, status, headers, bounded bodies, duration, error |
-| Middleware | `http`, Gin | Name, state, inclusive duration, error |
+| Middleware | `http`, Gin | Name, state, total span, measured middleware work, error |
 | SQL query | Bun, GORM, pgx, `database/sql`, OTel | SQL, connection, rows, duration, callsite, optional EXPLAIN |
 | Cache | go-cache, go-redis | Store, operation, key, hit, TTL, duration, error |
 | Job | go-queue, Asynq | Queue, state, attempts, bounded arguments, duration, error |
@@ -302,7 +302,10 @@ Automatic findings currently cover repeated query fingerprints, SQL wall-clock
 coverage, sequential safe HTTP calls, cache miss/query bursts, slow middleware,
 slow operations, and failed execution roots, jobs, mail, or HTTP calls. Schedule
 and Callable wrappers plus the Task lifecycle create independent roots and
-parent their nested work.
+parent their nested work. Bottleneck analysis follows those parent links and
+prefers a nested operation when it explains most of an inclusive wrapper span.
+It also requires operation-specific absolute latency thresholds, so an
+otherwise fast operation is not labeled merely for being the longest.
 
 See [request correlation, tags, middleware timing, and finding rules](docs/correlation.md).
 

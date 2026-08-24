@@ -190,9 +190,20 @@ router.Use(webpprofgin.MiddlewareWith(profiler))
 router.Use(webpprofgin.ProfileMiddlewareWith(profiler, "authentication", authentication))
 ```
 
-Middleware duration is inclusive: it contains the named middleware and all
-downstream handlers it invokes. Panicking middleware is recorded with state
-`panicked`, then the panic is propagated.
+The middleware `Duration` remains the complete invocation span so its children
+can be positioned and correlated correctly. The standard HTTP profiler also
+records `WorkDuration` and `WorkSpans`: time spent before, between, and after
+calls to `next`, excluding the time delegated to `next`. A query, cache access,
+or outgoing HTTP call made by the middleware remains nested beneath it and is
+included in its work duration. The UI renders the complete span as a subdued
+envelope and the middleware work as solid segments.
+
+Gin's `HandlerFunc` API does not expose the boundary of `c.Next()` to wrappers,
+so Gin middleware retains the complete-span duration unless work timing is
+provided manually. Named Gin middleware still propagates its entry ID while it
+runs, so Bun queries and other context-aware operations are nested under the
+correct middleware. Panicking middleware is recorded with state `panicked`,
+then the panic is propagated.
 
 ## Automatic findings
 
@@ -206,9 +217,14 @@ execution timeline. Current rules detect:
 - at least three successful, non-overlapping `GET`, `HEAD`, or `OPTIONS` calls
   to one HTTP host;
 - a cache read miss followed within 100 ms by at least three identical queries;
-- named middleware with inclusive duration of at least 100 ms;
+- named middleware with measured work duration of at least 100 ms. When work
+  timing is unavailable, the analyzer falls back to the complete invocation
+  span but suppresses that fallback finding if a nested operation explains at
+  least half of it;
 - measured custom events lasting at least 500 ms and a child operation that
-  accounts for at least half of an execution;
+  accounts for at least half of an execution. Bottleneck selection follows
+  `ParentID` descendants: when a child explains at least half of an inclusive
+  parent span, the deeper operation is reported instead of its wrapper;
 - conservative normalized concerns from a stored plain EXPLAIN plan, including
   full scans, temporary sorts, and large row estimates. Full scans and sorts
   are surfaced only for queries that are already slow.
@@ -218,6 +234,15 @@ calls; failed requests, queries, cache operations, events, middleware,
 exceptions, execution roots, jobs, mail, and HTTP calls; and a high cache miss
 rate when no richer pattern applies. Miss rate considers only successful reads
 and requires at least five samples. Writes and cache errors are excluded.
+
+A `Bottleneck` label requires both at least 50% of the execution window and an
+absolute latency threshold for the operation type. The defaults are 50 ms for
+SQL and cache access, 100 ms for middleware, and 500 ms for outbound HTTP,
+custom events, jobs, and email. SQL bottleneck detection is independent from
+the slow-query finding: queries become slow-query warnings at 100 ms and danger
+findings at 500 ms. The UI and Go analyzer use the same bottleneck thresholds,
+so the label is omitted when an operation is merely the longest among otherwise
+fast work.
 
 Work related only through `OriginRequestID` remains visible but is not charged
 to the originating HTTP request's latency or findings.

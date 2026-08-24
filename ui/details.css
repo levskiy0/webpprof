@@ -1466,6 +1466,8 @@ pre code {
 }
 
 .gantt-track svg { display: block; width: 100%; height: 12px; }
+.gantt-bar-envelope { fill: rgba(139, 92, 246, .1); stroke: #8b5cf6; stroke-dasharray: 5 4; stroke-opacity: .38; stroke-width: 1.5px; }
+.gantt-bar.middleware-work { filter: saturate(.92); }
 .gantt-row.bottleneck .gantt-bar { stroke: #9b3c22; stroke-width: 4px; }
 .gantt-row.failed .gantt-bar { fill: #ef4444; }
 
@@ -1475,6 +1477,16 @@ pre code {
   font-weight: 500;
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+.gantt-row > b small {
+  display: block;
+  margin-top: 2px;
+  color: #8b5cf6;
+  font: 8px/1.1 "SFMono-Regular", Consolas, monospace;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
 }
 
 .diagnostic-list {

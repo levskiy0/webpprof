@@ -1,6 +1,7 @@
 package gin
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -78,5 +79,69 @@ func TestProfileMiddlewareCapturesNamedInvocation(t *testing.T) {
 	}
 	if payload.Events[0].RequestID != payload.Events[1].RequestID || payload.Events[0].Tags["tenant"] != "acme" {
 		t.Fatalf("middleware = %+v, request = %+v", payload.Events[0], payload.Events[1])
+	}
+}
+
+func TestProfileMiddlewareBuildsParentTreeAndRestoresOuterContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mux := http.NewServeMux()
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
+	t.Cleanup(func() { _ = profiler.Close() })
+	type applicationContextKey struct{}
+
+	router := gin.New()
+	router.Use(MiddlewareWith(profiler))
+	router.Use(ProfileMiddlewareWith(profiler, "outer", func(c *gin.Context) {
+		profiler.LogQueryContext(c.Request.Context(), webpprof.Query{Meta: webpprof.Meta{ID: "outer-before"}, SQL: "SELECT 'outer-before'"})
+		c.Next()
+		if got := c.Request.Context().Value(applicationContextKey{}); got != "preserved" {
+			t.Fatalf("application context after c.Next() = %v, want preserved", got)
+		}
+		profiler.LogQueryContext(c.Request.Context(), webpprof.Query{Meta: webpprof.Meta{ID: "outer-after"}, SQL: "SELECT 'outer-after'"})
+	}))
+	router.Use(ProfileMiddlewareWith(profiler, "inner", func(c *gin.Context) {
+		ctx := context.WithValue(c.Request.Context(), applicationContextKey{}, "preserved")
+		c.Request = c.Request.WithContext(ctx)
+		profiler.LogQueryContext(c.Request.Context(), webpprof.Query{Meta: webpprof.Meta{ID: "inner-query"}, SQL: "SELECT 'inner'"})
+		c.Next()
+	}))
+	router.GET("/profiled", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/profiled", nil))
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/debug/webpprof/api/events?limit=10", nil))
+	var payload struct {
+		Events []webpprof.Entry `json:"events"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	entries := make(map[string]webpprof.Entry, len(payload.Events))
+	middlewareIDs := make(map[string]string)
+	for _, entry := range payload.Events {
+		entries[entry.ID] = entry
+		if entry.Kind != webpprof.KindMiddleware {
+			continue
+		}
+		var invocation webpprof.Middleware
+		if err := json.Unmarshal(entry.Data, &invocation); err != nil {
+			t.Fatal(err)
+		}
+		middlewareIDs[invocation.Name] = entry.ID
+	}
+	outerID, innerID := middlewareIDs["outer"], middlewareIDs["inner"]
+	if outerID == "" || innerID == "" {
+		t.Fatalf("missing middleware entries: %+v", middlewareIDs)
+	}
+	if got := entries[innerID].ParentID; got != outerID {
+		t.Fatalf("inner parent = %q, want outer %q", got, outerID)
+	}
+	for _, queryID := range []string{"outer-before", "outer-after"} {
+		if got := entries[queryID].ParentID; got != outerID {
+			t.Errorf("%s parent = %q, want outer %q", queryID, got, outerID)
+		}
+	}
+	if got := entries["inner-query"].ParentID; got != innerID {
+		t.Errorf("inner query parent = %q, want inner %q", got, innerID)
 	}
 }

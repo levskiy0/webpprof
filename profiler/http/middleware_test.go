@@ -168,6 +168,79 @@ func TestProfileMiddlewareCapturesNamedInvocation(t *testing.T) {
 	if invocation.Name != "authentication" || invocation.State != "completed" || invocation.Duration <= 0 {
 		t.Fatalf("middleware invocation = %+v", invocation)
 	}
+	if invocation.WorkDuration == nil || *invocation.WorkDuration <= 0 || *invocation.WorkDuration > invocation.Duration {
+		t.Fatalf("middleware work duration = %v, total = %s", invocation.WorkDuration, invocation.Duration)
+	}
+}
+
+func TestProfileMiddlewareMeasuresWorkOutsideDownstreamHandler(t *testing.T) {
+	mux := stdlibhttp.NewServeMux()
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
+	t.Cleanup(func() { _ = profiler.Close() })
+	named := ProfileMiddlewareWith(profiler, "database-context", func(next stdlibhttp.Handler) stdlibhttp.Handler {
+		return stdlibhttp.HandlerFunc(func(w stdlibhttp.ResponseWriter, r *stdlibhttp.Request) {
+			queryStartedAt := time.Now().UTC()
+			time.Sleep(15 * time.Millisecond)
+			profiler.LogQueryContext(r.Context(), webpprof.Query{
+				Meta: webpprof.Meta{ID: "middleware-query", StartedAt: queryStartedAt, Duration: time.Since(queryStartedAt)},
+				SQL:  "SELECT 1",
+			})
+			next.ServeHTTP(w, r)
+			time.Sleep(10 * time.Millisecond)
+		})
+	})
+	handler := MiddlewareWith(profiler, named(stdlibhttp.HandlerFunc(func(w stdlibhttp.ResponseWriter, _ *stdlibhttp.Request) {
+		time.Sleep(45 * time.Millisecond)
+		w.WriteHeader(stdlibhttp.StatusNoContent)
+	})))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(stdlibhttp.MethodGet, "/profiled", nil))
+
+	entries := readEvents(t, mux, "")
+	var middlewareEntry, queryEntry webpprof.Entry
+	var invocation webpprof.Middleware
+	for _, entry := range entries {
+		switch entry.Kind {
+		case webpprof.KindMiddleware:
+			middlewareEntry = entry
+			if err := json.Unmarshal(entry.Data, &invocation); err != nil {
+				t.Fatal(err)
+			}
+		case webpprof.KindQuery:
+			queryEntry = entry
+		}
+	}
+	if middlewareEntry.ID == "" || queryEntry.ID == "" {
+		t.Fatalf("missing middleware or query entry: %+v", entries)
+	}
+	if queryEntry.ParentID != middlewareEntry.ID {
+		t.Fatalf("query parent = %q, want middleware %q", queryEntry.ParentID, middlewareEntry.ID)
+	}
+	if invocation.WorkDuration == nil || *invocation.WorkDuration < 20*time.Millisecond {
+		t.Fatalf("middleware work duration = %v, want query and after-next work included", invocation.WorkDuration)
+	}
+	if excluded := invocation.Duration - *invocation.WorkDuration; excluded < 35*time.Millisecond {
+		t.Fatalf("excluded downstream duration = %s, total = %s, work = %s", excluded, invocation.Duration, *invocation.WorkDuration)
+	}
+	if len(invocation.WorkSpans) != 2 {
+		t.Fatalf("middleware work spans = %+v, want before-next and after-next spans", invocation.WorkSpans)
+	}
+}
+
+func TestMiddlewareTimingMergesOverlappingDownstreamCalls(t *testing.T) {
+	startedAt := time.Unix(0, 0)
+	timing := &middlewareTiming{downstream: []middlewareInterval{
+		{start: startedAt.Add(10 * time.Millisecond), end: startedAt.Add(40 * time.Millisecond)},
+		{start: startedAt.Add(30 * time.Millisecond), end: startedAt.Add(60 * time.Millisecond)},
+		{start: startedAt.Add(80 * time.Millisecond), end: startedAt.Add(90 * time.Millisecond)},
+	}}
+
+	spans, got := timing.workSpans(startedAt, startedAt.Add(100*time.Millisecond))
+	if want := 40 * time.Millisecond; got != want {
+		t.Fatalf("work duration = %s, want %s", got, want)
+	}
+	if len(spans) != 3 || spans[0].Offset != 0 || spans[0].Duration != 10*time.Millisecond || spans[1].Offset != 60*time.Millisecond || spans[1].Duration != 20*time.Millisecond || spans[2].Offset != 90*time.Millisecond || spans[2].Duration != 10*time.Millisecond {
+		t.Fatalf("work spans = %+v", spans)
+	}
 }
 
 func TestProfileMiddlewareBuildsParentTree(t *testing.T) {

@@ -10,7 +10,7 @@ contracts automatically.
 | Entity | Manual API | Automatic profiler | Recorded data |
 | --- | --- | --- | --- |
 | HTTP request | `LogRequest` | HTTP frameworks, gRPC | Scheme, method, real path, route, headers, bodies, status, sizes, duration, error |
-| Middleware | `LogMiddlewareContext` | `http`, Gin | Name, state, inclusive duration, error |
+| Middleware | `LogMiddlewareContext` | `http`, Gin | Name, state, total span, measured middleware work, error |
 | SQL query | `LogQueryContext`, `StartQuery` | Bun, GORM, pgx, `database/sql`, OTel | Connection, operation, SQL, rows, duration, callsite, optional EXPLAIN, error |
 | Cache | `LogCacheContext` | go-cache, go-redis | Store, operation, key, hit, TTL, duration, error |
 | Job | `LogJobContext` | go-queue, Asynq | Name, queue, state, attempts, duration, error |
@@ -169,7 +169,7 @@ re-panicked.
 | `Task` | `LogTask`, `LogTaskContext`, `StartTask`, `MeasureTask` | `Name`, `State` | Fields, callsite, error, panic |
 | `Exception` | `LogException`, `LogExceptionContext` | `Message` | Type, stack; use `PanicException(recovered)` for panics |
 | `Event` | `LogEvent`, `LogEventContext`, `StartEvent`, `Measure` | `Kind`, `Name` | Status, summary, fields, error |
-| `Middleware` | `LogMiddleware`, `LogMiddlewareContext` | `Name`, `State` | Inclusive duration, error |
+| `Middleware` | `LogMiddleware`, `LogMiddlewareContext` | `Name`, `State` | Total duration, work duration/spans, error |
 
 `State`, `Status`, `Kind`, and `Operation` are free-form. Keep vocabularies
 stable within an integration, for example `dispatched`, `succeeded`, and

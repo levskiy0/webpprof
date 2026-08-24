@@ -24,11 +24,15 @@ const (
 	analysisSlowSchedule          = 500 * time.Millisecond
 	analysisSlowCallable          = 500 * time.Millisecond
 	analysisSlowTask              = time.Second
+	analysisBottleneckQuery       = 50 * time.Millisecond
 	analysisSlowQuery             = 100 * time.Millisecond
+	analysisVerySlowQuery         = 500 * time.Millisecond
+	analysisSlowCache             = 50 * time.Millisecond
 	analysisSlowHTTPCall          = 500 * time.Millisecond
 	analysisSlowMiddleware        = 100 * time.Millisecond
 	analysisSlowEvent             = 500 * time.Millisecond
-	analysisBottleneckMinimum     = 100 * time.Millisecond
+	analysisSlowJob               = 500 * time.Millisecond
+	analysisSlowEmail             = 500 * time.Millisecond
 	analysisBottleneckShare       = 50
 )
 
@@ -297,6 +301,7 @@ func analyzeExecution(root Entry, entries []Entry, label string, sqlDominatesCod
 	sort.Slice(events, func(i, j int) bool { return entryHappenedBefore(events[i].entry, events[j].entry) })
 
 	effectiveDuration := executionAnalysisDuration(root, entries)
+	hierarchy := newAnalysisEntryHierarchy(entries)
 	cacheFindings, cacheExplainedQueries := cacheMissQueryFindings(caches, queries)
 	findings := nPlusOneFindings(queries, cacheExplainedQueries)
 	if finding, ok := sqlShareFinding(queries, root.StartedAt, effectiveDuration, label, sqlDominatesCode); ok {
@@ -304,9 +309,9 @@ func analyzeExecution(root Entry, entries []Entry, label string, sqlDominatesCod
 	}
 	findings = append(findings, sequentialHTTPFindings(httpCalls)...)
 	findings = append(findings, cacheFindings...)
-	findings = append(findings, slowMiddlewareFindings(middlewares)...)
+	findings = append(findings, slowMiddlewareFindings(middlewares, hierarchy)...)
 	findings = append(findings, slowEventFindings(events)...)
-	if finding, ok := executionBottleneckFinding(root, entries, effectiveDuration); ok {
+	if finding, ok := executionBottleneckFinding(root, entries, hierarchy, effectiveDuration); ok {
 		findings = append(findings, finding)
 	}
 	findings = append(findings, queryPlanFindings(queries)...)
@@ -545,28 +550,42 @@ func sequentialHTTPFindings(calls []analyzedHTTPCall) []Finding {
 	return findings
 }
 
-func slowMiddlewareFindings(middlewares []analyzedMiddleware) []Finding {
+func slowMiddlewareFindings(middlewares []analyzedMiddleware, hierarchy analysisEntryHierarchy) []Finding {
 	findings := make([]Finding, 0)
 	for _, operation := range middlewares {
-		duration := time.Duration(operation.entry.DurationNS)
+		duration := middlewareWorkDuration(operation.middleware, operation.entry.DurationNS)
 		if duration < analysisSlowMiddleware {
+			continue
+		}
+		if operation.middleware.WorkDuration == nil && hierarchy.hasExplainingDescendant(operation.entry.ID, duration) {
 			continue
 		}
 		name := strings.TrimSpace(operation.middleware.Name)
 		if name == "" {
 			name = "unnamed"
 		}
+		detail := "Measured middleware work duration exceeded 100 ms; time delegated to the downstream handler is excluded."
+		if operation.middleware.WorkDuration == nil {
+			detail = "The middleware's complete invocation span exceeded 100 ms; exact work timing was not available and no nested operation explained most of the span."
+		}
 		findings = append(findings, Finding{
 			Code:            FindingSlowMiddleware,
 			Severity:        FindingSeverityWarning,
 			Title:           fmt.Sprintf("Middleware %s took %s", name, findingDuration(duration)),
-			Detail:          "Inclusive middleware duration exceeded 100 ms.",
-			Suggestion:      "Profile work done before and after the downstream handler.",
+			Detail:          detail,
+			Suggestion:      "Inspect the middleware's nested operations and work before or after the downstream handler.",
 			EntryID:         operation.entry.ID,
 			RelatedEntryIDs: []string{operation.entry.ID},
 		})
 	}
 	return findings
+}
+
+func middlewareWorkDuration(middleware Middleware, fallback int64) time.Duration {
+	if middleware.WorkDuration != nil {
+		return max(*middleware.WorkDuration, 0)
+	}
+	return time.Duration(max(fallback, 0))
 }
 
 func slowEventFindings(events []analyzedEvent) []Finding {
@@ -593,21 +612,25 @@ func slowEventFindings(events []analyzedEvent) []Finding {
 	return findings
 }
 
-func executionBottleneckFinding(root Entry, entries []Entry, executionDuration time.Duration) (Finding, bool) {
+func executionBottleneckFinding(root Entry, entries []Entry, hierarchy analysisEntryHierarchy, executionDuration time.Duration) (Finding, bool) {
 	if executionDuration <= 0 {
 		return Finding{}, false
 	}
 	var bottleneck Entry
+	bottleneckDuration := time.Duration(0)
 	for _, entry := range entries {
-		if entry.ID == root.ID || entry.DurationNS <= bottleneck.DurationNS || !bottleneckCandidate(entry.Kind) {
+		duration := entryBottleneckDuration(entry)
+		if entry.ID == root.ID || duration <= bottleneckDuration || duration < bottleneckMinimum(entry.Kind) ||
+			hierarchy.hasQualifyingExplainingDescendant(entry.ID, duration) {
 			continue
 		}
 		bottleneck = entry
+		bottleneckDuration = duration
 	}
-	duration := time.Duration(bottleneck.DurationNS)
+	duration := bottleneckDuration
 	share := int(math.Round(float64(duration) / float64(executionDuration) * 100))
 	share = min(share, 100)
-	if duration < analysisBottleneckMinimum || share < analysisBottleneckShare {
+	if share < analysisBottleneckShare {
 		return Finding{}, false
 	}
 	label, name := findingEntryLabel(bottleneck)
@@ -622,12 +645,132 @@ func executionBottleneckFinding(root Entry, entries []Entry, executionDuration t
 	}, true
 }
 
+type analysisEntryHierarchy struct {
+	maxDescendantDuration           map[string]time.Duration
+	maxQualifyingDescendantDuration map[string]time.Duration
+}
+
+func newAnalysisEntryHierarchy(entries []Entry) analysisEntryHierarchy {
+	entriesByID := make(map[string]Entry, len(entries))
+	for _, entry := range entries {
+		if entry.ID != "" {
+			entriesByID[entry.ID] = entry
+		}
+	}
+
+	children := make(map[string][]string, len(entriesByID))
+	for id, entry := range entriesByID {
+		if entry.ParentID == "" {
+			continue
+		}
+		if _, ok := entriesByID[entry.ParentID]; ok {
+			children[entry.ParentID] = append(children[entry.ParentID], id)
+		}
+	}
+
+	hierarchy := analysisEntryHierarchy{
+		maxDescendantDuration:           make(map[string]time.Duration, len(entriesByID)),
+		maxQualifyingDescendantDuration: make(map[string]time.Duration, len(entriesByID)),
+	}
+	state := make(map[string]uint8, len(entriesByID))
+	type subtreeDurations struct {
+		all        time.Duration
+		qualifying time.Duration
+	}
+	memo := make(map[string]subtreeDurations, len(entriesByID))
+	var subtreeMaximum func(string) subtreeDurations
+	subtreeMaximum = func(id string) subtreeDurations {
+		switch state[id] {
+		case 1:
+			return subtreeDurations{}
+		case 2:
+			return memo[id]
+		}
+		state[id] = 1
+		entry := entriesByID[id]
+		ownDuration := time.Duration(0)
+		if bottleneckCandidate(entry.Kind) {
+			ownDuration = entryBottleneckDuration(entry)
+		}
+		maxDescendant := subtreeDurations{}
+		for _, childID := range children[id] {
+			childMaximum := subtreeMaximum(childID)
+			maxDescendant.all = max(maxDescendant.all, childMaximum.all)
+			maxDescendant.qualifying = max(maxDescendant.qualifying, childMaximum.qualifying)
+		}
+		hierarchy.maxDescendantDuration[id] = maxDescendant.all
+		hierarchy.maxQualifyingDescendantDuration[id] = maxDescendant.qualifying
+		result := subtreeDurations{all: max(ownDuration, maxDescendant.all), qualifying: maxDescendant.qualifying}
+		if ownDuration >= bottleneckMinimum(entry.Kind) {
+			result.qualifying = max(ownDuration, maxDescendant.qualifying)
+		}
+		memo[id] = result
+		state[id] = 2
+		return memo[id]
+	}
+	for id := range entriesByID {
+		subtreeMaximum(id)
+	}
+	return hierarchy
+}
+
+// hasExplainingDescendant reports whether a deeper operation accounts for
+// enough of an inclusive span to be the more useful bottleneck. Parent spans
+// remain candidates when their children only explain a minority of the work.
+func (hierarchy analysisEntryHierarchy) hasExplainingDescendant(entryID string, duration time.Duration) bool {
+	if entryID == "" || duration <= 0 {
+		return false
+	}
+	descendantDuration := hierarchy.maxDescendantDuration[entryID]
+	return descendantDuration > 0 && float64(descendantDuration)/float64(duration)*100 >= analysisBottleneckShare
+}
+
+func (hierarchy analysisEntryHierarchy) hasQualifyingExplainingDescendant(entryID string, duration time.Duration) bool {
+	if entryID == "" || duration <= 0 {
+		return false
+	}
+	descendantDuration := hierarchy.maxQualifyingDescendantDuration[entryID]
+	return descendantDuration > 0 && float64(descendantDuration)/float64(duration)*100 >= analysisBottleneckShare
+}
+
+func entryBottleneckDuration(entry Entry) time.Duration {
+	if entry.Kind != KindMiddleware {
+		return time.Duration(max(entry.DurationNS, 0))
+	}
+	var middleware Middleware
+	if json.Unmarshal(entry.Data, &middleware) != nil {
+		return time.Duration(max(entry.DurationNS, 0))
+	}
+	return middlewareWorkDuration(middleware, entry.DurationNS)
+}
+
 func bottleneckCandidate(kind Kind) bool {
 	switch kind {
 	case KindQuery, KindCache, KindHTTPCall, KindMiddleware, KindEvent, KindJob, KindEmail:
 		return true
 	default:
 		return false
+	}
+}
+
+func bottleneckMinimum(kind Kind) time.Duration {
+	switch kind {
+	case KindQuery:
+		return analysisBottleneckQuery
+	case KindCache:
+		return analysisSlowCache
+	case KindMiddleware:
+		return analysisSlowMiddleware
+	case KindHTTPCall:
+		return analysisSlowHTTPCall
+	case KindEvent:
+		return analysisSlowEvent
+	case KindJob:
+		return analysisSlowJob
+	case KindEmail:
+		return analysisSlowEmail
+	default:
+		return time.Duration(1<<63 - 1)
 	}
 }
 
@@ -760,9 +903,15 @@ func legacyPerformanceFindings(root Entry, queries []analyzedQuery, calls []anal
 		if duration < analysisSlowQuery {
 			continue
 		}
+		severity := FindingSeverityWarning
+		title := "Slow query: " + findingDuration(duration)
+		if duration >= analysisVerySlowQuery {
+			severity = FindingSeverityDanger
+			title = "Very slow query: " + findingDuration(duration)
+		}
 		findings = append(findings, Finding{
-			Code: FindingSlowQuery, Severity: FindingSeverityWarning,
-			Title:      "Slow query: " + findingDuration(duration),
+			Code: FindingSlowQuery, Severity: severity,
+			Title:      title,
 			Detail:     compactFindingText(query.query.SQL, 180),
 			Suggestion: "Inspect the query plan, indexes, and returned row count.",
 			EntryID:    query.entry.ID, RelatedEntryIDs: []string{query.entry.ID},

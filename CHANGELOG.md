@@ -3,7 +3,28 @@
 All notable changes to webpprof are documented here. Releases follow semantic
 versioning and are published from `v*` Git tags.
 
-## Unreleased
+## 0.6.0 - 2026-08-25
+
+### Changed
+
+- Measure standard HTTP middleware work separately from the complete downstream
+  invocation span. The request timeline renders exact before/after work
+  segments, keeps middleware-owned queries and dependency calls nested, and
+  uses measured work for slow-middleware and bottleneck analysis.
+- Propagate named Gin middleware IDs through `context.Context` while the
+  middleware runs, so Bun queries and other context-aware events become its
+  children and outer middleware regain their parent after nested `c.Next()`
+  calls.
+- Make automatic bottleneck analysis hierarchy-aware: when a nested operation
+  explains at least half of an inclusive parent span, report the deeper
+  operation instead of the wrapper. Unmeasured Gin middleware spans use the
+  same rule to avoid duplicate slow-middleware findings, while measured
+  middleware work remains independently reportable.
+- Require both a 50% execution share and an operation-specific absolute latency
+  threshold before labeling a timeline operation as the bottleneck: 50 ms for
+  SQL and cache access, 100 ms for middleware, and 500 ms for HTTP calls,
+  custom events, jobs, and email. Keep the independent slow-query warning at
+  100 ms and raise its severity to danger at 500 ms.
 
 ## 0.5.0 - 2026-08-24
 

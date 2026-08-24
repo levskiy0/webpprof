@@ -2,12 +2,15 @@ package http
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
 	stdlibhttp "net/http"
 	"net/url"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/levskiy0/webpprof"
@@ -19,6 +22,86 @@ type responseObserver struct {
 	size        int64
 	wroteHeader bool
 	body        *BodyRecorder
+}
+
+type middlewareTimingContextKey struct{}
+
+type middlewareInterval struct {
+	start time.Time
+	end   time.Time
+}
+
+type middlewareTiming struct {
+	mu         sync.Mutex
+	downstream []middlewareInterval
+}
+
+func (t *middlewareTiming) recordDownstream(start, end time.Time) {
+	if t == nil || !end.After(start) {
+		return
+	}
+	t.mu.Lock()
+	t.downstream = append(t.downstream, middlewareInterval{start: start, end: end})
+	t.mu.Unlock()
+}
+
+func (t *middlewareTiming) workSpans(start, end time.Time) ([]webpprof.MiddlewareWorkSpan, time.Duration) {
+	if t == nil || !end.After(start) {
+		return nil, 0
+	}
+	t.mu.Lock()
+	intervals := append([]middlewareInterval(nil), t.downstream...)
+	t.mu.Unlock()
+	for index := range intervals {
+		if intervals[index].start.Before(start) {
+			intervals[index].start = start
+		}
+		if intervals[index].end.After(end) {
+			intervals[index].end = end
+		}
+	}
+	sort.Slice(intervals, func(i, j int) bool { return intervals[i].start.Before(intervals[j].start) })
+	merged := make([]middlewareInterval, 0, len(intervals))
+	var current middlewareInterval
+	for _, interval := range intervals {
+		if !interval.end.After(interval.start) {
+			continue
+		}
+		if current.end.IsZero() {
+			current = interval
+			continue
+		}
+		if !interval.start.After(current.end) {
+			if interval.end.After(current.end) {
+				current.end = interval.end
+			}
+			continue
+		}
+		merged = append(merged, current)
+		current = interval
+	}
+	if !current.end.IsZero() {
+		merged = append(merged, current)
+	}
+	spans := make([]webpprof.MiddlewareWorkSpan, 0, len(merged)+1)
+	workDuration := time.Duration(0)
+	cursor := start
+	for _, interval := range merged {
+		if interval.start.After(cursor) {
+			duration := interval.start.Sub(cursor)
+			spans = append(spans, webpprof.MiddlewareWorkSpan{Offset: cursor.Sub(start), Duration: duration})
+			workDuration += duration
+		}
+		if interval.end.After(cursor) {
+			cursor = interval.end
+		}
+	}
+	if end.After(cursor) {
+		duration := end.Sub(cursor)
+		spans = append(spans, webpprof.MiddlewareWorkSpan{Offset: cursor.Sub(start), Duration: duration})
+		workDuration += duration
+	}
+	return spans, workDuration
 }
 
 // Middleware records inbound requests handled by next using the default
@@ -73,7 +156,8 @@ func MiddlewareWith(p *webpprof.Profiler, next stdlibhttp.Handler) stdlibhttp.Ha
 }
 
 // ProfileMiddleware wraps a standard HTTP middleware and records each
-// invocation by name. The recorded duration is inclusive of downstream work.
+// invocation by name. The complete invocation span includes downstream work;
+// Middleware.WorkDuration excludes time delegated to the downstream handler.
 func ProfileMiddleware(name string, middleware func(stdlibhttp.Handler) stdlibhttp.Handler) func(stdlibhttp.Handler) stdlibhttp.Handler {
 	return ProfileMiddlewareWith(webpprof.Default(), name, middleware)
 }
@@ -89,22 +173,41 @@ func ProfileMiddlewareWith(p *webpprof.Profiler, name string, middleware func(st
 		return middleware
 	}
 	return func(next stdlibhttp.Handler) stdlibhttp.Handler {
-		wrapped := middleware(next)
+		timedNext := stdlibhttp.HandlerFunc(func(w stdlibhttp.ResponseWriter, r *stdlibhttp.Request) {
+			startedAt := time.Now()
+			timing, _ := r.Context().Value(middlewareTimingContextKey{}).(*middlewareTiming)
+			if timing == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			defer func() { timing.recordDownstream(startedAt, time.Now()) }()
+			next.ServeHTTP(w, r)
+		})
+		wrapped := middleware(timedNext)
 		if wrapped == nil {
 			panic("webpprof: HTTP middleware returned a nil handler")
 		}
 		return stdlibhttp.HandlerFunc(func(w stdlibhttp.ResponseWriter, r *stdlibhttp.Request) {
+			timing := &middlewareTiming{}
 			invocation := webpprof.Middleware{
 				Meta: webpprof.Meta{
-					ID:        webpprof.NewID(),
-					ParentID:  webpprof.ParentEntryIDFromContext(r.Context()),
-					StartedAt: time.Now().UTC(),
+					ID:       webpprof.NewID(),
+					ParentID: webpprof.ParentEntryIDFromContext(r.Context()),
 				},
 				Name:  name,
 				State: "completed",
 			}
+			ctx := webpprof.WithParentEntry(r.Context(), invocation.ID)
+			ctx = context.WithValue(ctx, middlewareTimingContextKey{}, timing)
+			profiledRequest := r.WithContext(ctx)
+			startedAt := time.Now()
+			invocation.StartedAt = startedAt.UTC()
 			defer func() {
-				invocation.Duration = time.Since(invocation.StartedAt)
+				finishedAt := time.Now()
+				invocation.Duration = finishedAt.Sub(startedAt)
+				workSpans, workDuration := timing.workSpans(startedAt, finishedAt)
+				invocation.WorkSpans = workSpans
+				invocation.WorkDuration = &workDuration
 				if recovered := recover(); recovered != nil {
 					invocation.State = "panicked"
 					invocation.Error = fmt.Sprint(recovered)
@@ -113,8 +216,7 @@ func ProfileMiddlewareWith(p *webpprof.Profiler, name string, middleware func(st
 				}
 				p.LogMiddlewareContext(r.Context(), invocation)
 			}()
-			ctx := webpprof.WithParentEntry(r.Context(), invocation.ID)
-			wrapped.ServeHTTP(w, r.WithContext(ctx))
+			wrapped.ServeHTTP(w, profiledRequest)
 		})
 	}
 }

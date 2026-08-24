@@ -9,6 +9,7 @@ const defaultSidebarKinds=kinds.filter(Boolean);
 const methodFilterKinds=new Set(["request","http_call"]);
 const durationFilterKinds=new Set(["request","middleware","query","cache","job","email","http_call","schedule","callable","task","event",""]);
 const executionRootKinds=new Set(["schedule","callable","task"]);
+const timelineBottleneckThresholdMS=Object.freeze({query:50,cache:50,middleware:100,http_call:500,event:500,job:500,email:500});
 const filterParamKeys=["method","status","operation","connection","database","result","store","queue","transport","host","level","state","type","kind"];
 const sqlKeywords=new Set("ADD ALL ALTER ANALYZE AND AS ASC BETWEEN BY CASE CHECK COLUMN CONSTRAINT CREATE CROSS CURRENT_DATE CURRENT_TIME CURRENT_TIMESTAMP DATABASE DEFAULT DELETE DESC DISTINCT DROP ELSE END EXISTS EXPLAIN FALSE FOREIGN FROM FULL GROUP HAVING IN INDEX INNER INSERT INTERSECT INTO IS JOIN KEY LEFT LIKE LIMIT NATURAL NOT NULL OFFSET ON OR ORDER OUTER PRIMARY REFERENCES RETURNING RIGHT SELECT SET TABLE THEN TRUE UNION UNIQUE UPDATE USING VALUES WHEN WHERE WITH".split(" "));
 const ids=["login","workspace","login-form","login-error","token","socket-status","event-count","capacity-status","storage-note","import-session","session-file","export-session","pause","clear","tag-watcher","tag-watch-count","tag-watch-clear","tag-watch-search","tag-watch-selected","tag-watch-results-count","tag-watch-options","kinds","search","filter-toggle","filter-count","filter-clear","filters-drawer","filter-summary","entity-filters","time-filter","time-range","time-custom","time-from","time-to","duration-filter","duration","list-heading","events","event-rows","empty","pagination","load-more","pagination-status","detail","dashboard-screen","index-screen","detail-screen","screen-title","back"];
@@ -646,7 +647,7 @@ function virtualSpacer(height,position,columns){
 function filtered(){
   const search=elements.search.value.trim().toLowerCase();
   const minimum=durationFilterKinds.has(state.kind)?Number(elements.duration.value)*1000000:0;
-  return visibleEvents().filter(event=>(!state.kind||event.kind===state.kind)&&matchesTimeRange(event)&&eventDuration(event)>=minimum&&matchesEntityFilters(event)&&(!search||`${event.kind} ${JSON.stringify(event.data)}`.toLowerCase().includes(search))).sort((a,b)=>b.cursor-a.cursor);
+  return visibleEvents().filter(event=>(!state.kind||event.kind===state.kind)&&matchesTimeRange(event)&&operationDuration(event)>=minimum&&matchesEntityFilters(event)&&(!search||`${event.kind} ${JSON.stringify(event.data)}`.toLowerCase().includes(search))).sort((a,b)=>b.cursor-a.cursor);
 }
 
 function matchesTimeRange(event){
@@ -809,7 +810,7 @@ function updateFilterPanel(){
     const label=elements["time-range"].selectedOptions[0]?.textContent||range;
     active.push(`Time: ${label}`);
   }
-  if(durationFilterKinds.has(state.kind)&&elements.duration.value!=="0")active.push(`Duration: ≥ ${elements.duration.value} ms`);
+  if(durationFilterKinds.has(state.kind)&&elements.duration.value!=="0")active.push(`${state.kind==="middleware"?"Work":"Duration"}: ≥ ${elements.duration.value} ms`);
   elements["filter-count"].textContent=String(active.length);
   elements["filter-count"].classList.toggle("hidden",active.length===0);
   elements["filter-clear"].disabled=active.length===0;
@@ -1180,6 +1181,14 @@ function eventDuration(event){
   return Number(event?.duration_ns)||0;
 }
 
+function hasMeasuredMiddlewareWork(event){
+  return event?.kind==="middleware"&&Object.prototype.hasOwnProperty.call(event.data||{},"work_duration_ns")&&Number.isFinite(Number(event.data.work_duration_ns));
+}
+
+function operationDuration(event){
+  return hasMeasuredMiddlewareWork(event)?Math.max(Number(event.data.work_duration_ns),0):eventDuration(event);
+}
+
 function isFailure(event){
   const data=event.data||{};
   const status=String(data.status||"").toLowerCase();
@@ -1340,7 +1349,7 @@ function row(event){
 
 function listHeadingRow(kind){
   const layout=listLayout(kind);
-  return`<tr>${layout.badge?`<th scope="col" class="table-fit">${escapeHTML(layout.badge)}</th>`:""}<th scope="col">${escapeHTML(layout.entry)}</th>${layout.status?`<th scope="col" class="table-fit text-center">${escapeHTML(layout.status)}</th>`:""}${layout.duration?'<th scope="col" class="table-fit text-right">Duration</th>':""}<th scope="col" class="table-fit">Happened</th><th scope="col" class="table-fit"><span class="sr-only">Open</span></th></tr>`;
+  return`<tr>${layout.badge?`<th scope="col" class="table-fit">${escapeHTML(layout.badge)}</th>`:""}<th scope="col">${escapeHTML(layout.entry)}</th>${layout.status?`<th scope="col" class="table-fit text-center">${escapeHTML(layout.status)}</th>`:""}${layout.duration?`<th scope="col" class="table-fit text-right">${escapeHTML(layout.durationLabel||"Duration")}</th>`:""}<th scope="col" class="table-fit">Happened</th><th scope="col" class="table-fit"><span class="sr-only">Open</span></th></tr>`;
 }
 
 function eventRowCells(event,kind){
@@ -1348,14 +1357,14 @@ function eventRowCells(event,kind){
   const layout=listLayout(kind);
   const badge=layout.badge?listBadge(event,kind):null;
   const title=eventPreviewTitle(event);
-  return`${badge?`<td class="table-fit pr-0"><span class="method${badge.className?` ${escapeHTML(badge.className)}`:""}" title="${escapeHTML(badge.label)}">${escapeHTML(badge.label)}</span></td>`:""}<td class="event-entry" title="${escapeHTML(title)}">${eventPreview(event,kind)}</td>${layout.status?`<td class="table-fit text-center"><span class="state ${status.className}">${escapeHTML(status.label)}</span></td>`:""}${layout.duration?`<td class="table-fit text-right text-muted"><span class="duration">${duration(event.duration_ns)}</span></td>`:""}<td class="table-fit text-muted event-time" data-timeago="${escapeHTML(event.started_at||"")}" title="${escapeHTML(event.started_at||"")}">${relativeTime(event.started_at)}</td><td class="table-fit">${tableRowAction()}</td>`;
+  return`${badge?`<td class="table-fit pr-0"><span class="method${badge.className?` ${escapeHTML(badge.className)}`:""}" title="${escapeHTML(badge.label)}">${escapeHTML(badge.label)}</span></td>`:""}<td class="event-entry" title="${escapeHTML(title)}">${eventPreview(event,kind)}</td>${layout.status?`<td class="table-fit text-center"><span class="state ${status.className}">${escapeHTML(status.label)}</span></td>`:""}${layout.duration?`<td class="table-fit text-right text-muted"><span class="duration">${duration(operationDuration(event))}</span></td>`:""}<td class="table-fit text-muted event-time" data-timeago="${escapeHTML(event.started_at||"")}" title="${escapeHTML(event.started_at||"")}">${relativeTime(event.started_at)}</td><td class="table-fit">${tableRowAction()}</td>`;
 }
 
 function listLayout(kind){
   const layouts={
     "":{badge:"Type",entry:"Entry",status:"Status",duration:true},
     request:{badge:"Verb",entry:"Path",status:"Status",duration:true},
-    middleware:{badge:"",entry:"Middleware",status:"State",duration:true},
+    middleware:{badge:"",entry:"Middleware",status:"State",duration:true,durationLabel:"Work"},
     query:{badge:"",entry:"Query",status:"",duration:true},
     cache:{badge:"Operation",entry:"Key",status:"Result",duration:true},
     job:{badge:"Queue",entry:"Job",status:"State",duration:true},
@@ -1878,7 +1887,8 @@ function entityDetailsCard(event,request){
   if(event.kind==="task")facts.push(["Task",data.name||"—"],["State",`<span class="state ${status.className}">${escapeHTML(data.state||status.label)}</span>`,true]);
   if(event.kind==="exception")facts.push(["Type",data.type||"Exception"],["Message",data.message||"—"],["Status",`<span class="state error">Error</span>`,true]);
   if(event.kind==="event")facts.push(["Kind",data.kind||"event"],["Name",data.name||"—"],["Status",`<span class="state ${status.className}">${escapeHTML(data.status||status.label)}</span>`,true],["Summary",data.summary||"—"]);
-  facts.push(["Duration",duration(event.duration_ns)]);
+  if(hasMeasuredMiddlewareWork(event))facts.push(["Middleware work",duration(operationDuration(event))],["Total span",duration(event.duration_ns)]);
+  else facts.push(["Duration",duration(event.duration_ns)]);
   if(Array.isArray(data.callsite)&&data.callsite.length)facts.push(["Callsite",sourceFrameLocation(data.callsite[0],true),true]);
   if(request)facts.push(["Request",requestLink(request),true]);
   else facts.push(["Request","Standalone"]);
@@ -2150,9 +2160,21 @@ function timeline(events,executionRoot=null){
     const width=Math.max(2,Math.min(1000-x,elapsed/windowMS*1000));
     const criticalClass=critical.ids.has(event.id)?" critical":"";
     const bottleneckClass=critical.bottleneck?.id===event.id?" bottleneck":"";
-    const durationLabel=event.id===request.id&&recorded<windowMS*.99?formatMilliseconds(windowMS):duration(event.duration_ns);
+    const durationLabel=event.id===request.id&&recorded<windowMS*.99?formatMilliseconds(windowMS):duration(operationDuration(event));
+    const measuredWork=hasMeasuredMiddlewareWork(event);
+    const workSpans=measuredWork&&Array.isArray(event.data.work_spans)?event.data.work_spans:[];
+    const envelope=measuredWork?`<rect class="gantt-bar-envelope" data-kind="middleware" x="${x.toFixed(2)}" y="5" width="${width.toFixed(2)}" height="10" rx="3"/>`:"";
+    const workBars=measuredWork?workSpans.map(span=>{
+      const spanOffset=Math.max(Number(span.offset_ns)||0,0)/1e6;
+      const spanDuration=Math.max(Number(span.duration_ns)||0,0)/1e6;
+      const spanX=Math.min(998,Math.max(0,(offset+spanOffset)/windowMS*1000));
+      const spanWidth=Math.max(2,Math.min(1000-spanX,spanDuration/windowMS*1000));
+      return`<rect class="gantt-bar middleware-work" data-kind="middleware" x="${spanX.toFixed(2)}" y="3" width="${spanWidth.toFixed(2)}" height="14" rx="3"/>`;
+    }).join(""):"";
+    const bars=measuredWork?`${envelope}${workBars}`:`<rect class="gantt-bar" data-kind="${escapeHTML(event.kind)}" x="${x.toFixed(2)}" y="3" width="${width.toFixed(2)}" height="14" rx="3"/>`;
+    const timingLabel=measuredWork?`${durationLabel} middleware work; ${formatMilliseconds(recorded)} total span`:durationLabel;
     const operation=event.kind==="request"?requestTarget(event.data||{}):title(event);
-    return`<button type="button" class="gantt-row depth-${Math.min(depth,6)}${isFailure(event)?" failed":""}${criticalClass}${bottleneckClass}" data-event-id="${escapeHTML(event.id)}"><span class="gantt-operation">${timelineTreeConnector(depth,isLast,ancestorContinuations,hasChildren)}<span class="gantt-kind" data-kind="${escapeHTML(event.kind)}">${escapeHTML(timelineKindLabel(event.kind))}</span><strong title="${escapeHTML(operation)}">${escapeHTML(operation)}</strong>${critical.bottleneck?.id===event.id?'<em>Bottleneck</em>':""}</span><span class="gantt-track"><svg viewBox="0 0 1000 20" preserveAspectRatio="none" role="img" aria-label="Starts at ${escapeHTML(formatMilliseconds(offset))}, lasts ${escapeHTML(durationLabel)}"><rect class="gantt-bar" data-kind="${escapeHTML(event.kind)}" x="${x.toFixed(2)}" y="3" width="${width.toFixed(2)}" height="14" rx="3"/></svg></span><b>${escapeHTML(durationLabel)}</b>${rowAction()}</button>`;
+    return`<button type="button" class="gantt-row depth-${Math.min(depth,6)}${isFailure(event)?" failed":""}${criticalClass}${bottleneckClass}" data-event-id="${escapeHTML(event.id)}"><span class="gantt-operation">${timelineTreeConnector(depth,isLast,ancestorContinuations,hasChildren)}<span class="gantt-kind" data-kind="${escapeHTML(event.kind)}">${escapeHTML(timelineKindLabel(event.kind))}</span><strong title="${escapeHTML(operation)}">${escapeHTML(operation)}</strong>${critical.bottleneck?.id===event.id?'<em>Bottleneck</em>':""}</span><span class="gantt-track"><svg viewBox="0 0 1000 20" preserveAspectRatio="none" role="img" aria-label="Starts at ${escapeHTML(formatMilliseconds(offset))}; ${escapeHTML(timingLabel)}">${bars}</svg></span><b title="${escapeHTML(timingLabel)}">${escapeHTML(durationLabel)}${measuredWork?"<small>work</small>":""}</b>${rowAction()}</button>`;
   }).join("");
   const bottleneck=critical.bottleneck;
   const windowLabel=request.kind==="request"?"Request window":"Execution window";
@@ -2205,10 +2227,18 @@ function timelineCriticalPath(events,first,last){
   // every timeline would only restate its total duration, not identify the
   // child operation responsible for it.
   const blockingKinds=new Set(["middleware","query","cache","http_call","event"]);
-  const operations=events.filter(event=>blockingKinds.has(event.kind)&&eventDuration(event)>0).map(event=>{
-    const start=Math.max(first,Date.parse(event.started_at)||first);
-    const end=Math.min(last,start+eventDuration(event)/1e6);
-    return{event,start,end,weight:Math.max(0,end-start)};
+  const operations=events.filter(event=>blockingKinds.has(event.kind)&&operationDuration(event)>0).flatMap(event=>{
+    const eventStart=Date.parse(event.started_at)||first;
+    if(hasMeasuredMiddlewareWork(event)&&Array.isArray(event.data.work_spans)&&event.data.work_spans.length){
+      return event.data.work_spans.map(span=>{
+        const start=Math.max(first,eventStart+Math.max(Number(span.offset_ns)||0,0)/1e6);
+        const end=Math.min(last,start+Math.max(Number(span.duration_ns)||0,0)/1e6);
+        return{event,start,end,weight:Math.max(0,end-start)};
+      });
+    }
+    const start=Math.max(first,eventStart);
+    const end=Math.min(last,eventStart+eventDuration(event)/1e6);
+    return[{event,start,end,weight:Math.min(Math.max(0,end-start),operationDuration(event)/1e6)}];
   }).filter(operation=>operation.weight>0).sort((left,right)=>left.end-right.end||left.start-right.start);
   const best=Array(operations.length+1).fill(0);
   const previous=Array(operations.length).fill(-1);
@@ -2234,15 +2264,56 @@ function timelineCriticalPath(events,first,last){
   const ids=new Set(selected.map(event=>event.id));
   const request=events.find(event=>event.kind==="request");
   if(request)ids.add(request.id);
-  const bottleneck=selected.reduce((largest,event)=>!largest||eventDuration(event)>eventDuration(largest)?event:largest,null);
+  const bottleneck=timelineBottleneck(events,last-first);
   return{ids,bottleneck,duration:best[operations.length]};
+}
+
+function timelineBottleneck(events,executionMS){
+  if(executionMS<=0)return null;
+  const candidates=events.filter(event=>timelineBottleneckMinimum(event.kind)<Infinity&&operationDuration(event)>0);
+  const byID=new Map(events.filter(event=>event.id).map(event=>[event.id,event]));
+  const children=new Map();
+  for(const event of byID.values()){
+    if(!event.parent_id||!byID.has(event.parent_id)||event.parent_id===event.id)continue;
+    if(!children.has(event.parent_id))children.set(event.parent_id,[]);
+    children.get(event.parent_id).push(event.id);
+  }
+  const state=new Map();
+  const maximum=new Map();
+  const maximumDescendant=new Map();
+  const visit=id=>{
+    if(state.get(id)===1)return 0;
+    if(state.get(id)===2)return maximum.get(id)||0;
+    state.set(id,1);
+    const event=byID.get(id);
+    const duration=event?operationDuration(event)/1e6:0;
+    const own=duration>=timelineBottleneckMinimum(event?.kind)?duration:0;
+    let descendant=0;
+    for(const childID of children.get(id)||[])descendant=Math.max(descendant,visit(childID));
+    maximumDescendant.set(id,descendant);
+    maximum.set(id,Math.max(own,descendant));
+    state.set(id,2);
+    return maximum.get(id);
+  };
+  for(const id of byID.keys())visit(id);
+  const eligible=candidates.filter(event=>{
+    const duration=operationDuration(event)/1e6;
+    if(duration<timelineBottleneckMinimum(event.kind))return false;
+    return(maximumDescendant.get(event.id)||0)<duration*.5;
+  });
+  const largest=eligible.reduce((current,event)=>!current||operationDuration(event)>operationDuration(current)?event:current,null);
+  return largest&&operationDuration(largest)/1e6>=executionMS*.5?largest:null;
+}
+
+function timelineBottleneckMinimum(kind){
+  return timelineBottleneckThresholdMS[kind]??Infinity;
 }
 
 function timelineBreakdown(events){
   const totals=new Map();
   for(const event of events){
     if(event.kind==="request")continue;
-    const value=Math.max(eventDuration(event)/1e6,0);
+    const value=Math.max(operationDuration(event)/1e6,0);
     if(value)totals.set(event.kind,(totals.get(event.kind)||0)+value);
   }
   const parts=[...totals].map(([kind,value])=>({kind,value})).sort((left,right)=>right.value-left.value);

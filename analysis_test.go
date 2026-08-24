@@ -124,6 +124,217 @@ func TestAnalyzeRequestAvoidsWeakSignals(t *testing.T) {
 	}
 }
 
+func TestAnalyzeRequestUsesMeasuredMiddlewareWork(t *testing.T) {
+	profiler := newProfiler()
+	t.Cleanup(func() { _ = profiler.Close() })
+	startedAt := time.Now().UTC()
+	workDuration := 20 * time.Millisecond
+	profiler.LogRequest(Request{
+		Meta: Meta{ID: "middleware-work-request", StartedAt: startedAt, Duration: 400 * time.Millisecond},
+		Middlewares: []Middleware{{
+			Meta:         Meta{ID: "mostly-downstream", StartedAt: startedAt, Duration: 350 * time.Millisecond},
+			Name:         "authentication",
+			WorkDuration: &workDuration,
+		}},
+		Queries: []Query{{
+			Meta: Meta{ID: "actual-bottleneck", ParentID: "mostly-downstream", StartedAt: startedAt.Add(50 * time.Millisecond), Duration: 250 * time.Millisecond},
+			SQL:  "SELECT pg_sleep(0.25)",
+		}},
+	})
+
+	analysis, ok := profiler.AnalyzeRequest("middleware-work-request")
+	if !ok {
+		t.Fatal("AnalyzeRequest() did not find retained request")
+	}
+	foundBottleneck := false
+	for _, finding := range analysis.Findings {
+		if finding.Code == FindingSlowMiddleware {
+			t.Fatalf("downstream time produced slow middleware finding: %+v", finding)
+		}
+		if finding.Code == FindingExecutionBottleneck && finding.EntryID != "actual-bottleneck" {
+			t.Fatalf("bottleneck = %q, want actual-bottleneck", finding.EntryID)
+		}
+		if finding.Code == FindingExecutionBottleneck {
+			foundBottleneck = true
+		}
+	}
+	if !foundBottleneck {
+		t.Fatalf("missing execution bottleneck: %+v", analysis.Findings)
+	}
+}
+
+func TestAnalyzeRequestPrefersDeepNestedOperationOverInclusiveGinMiddleware(t *testing.T) {
+	profiler := newProfiler()
+	t.Cleanup(func() { _ = profiler.Close() })
+	startedAt := time.Now().UTC()
+	profiler.LogRequest(Request{
+		Meta: Meta{ID: "gin-request", StartedAt: startedAt, Duration: 400 * time.Millisecond},
+		Middlewares: []Middleware{
+			{
+				Meta: Meta{ID: "outer-middleware", ParentID: "gin-request", StartedAt: startedAt.Add(5 * time.Millisecond), Duration: 380 * time.Millisecond},
+				Name: "request-log",
+			},
+			{
+				Meta: Meta{ID: "inner-middleware", ParentID: "outer-middleware", StartedAt: startedAt.Add(10 * time.Millisecond), Duration: 360 * time.Millisecond},
+				Name: "authentication",
+			},
+		},
+		Queries: []Query{{
+			Meta: Meta{ID: "nested-query", ParentID: "inner-middleware", StartedAt: startedAt.Add(50 * time.Millisecond), Duration: 250 * time.Millisecond},
+			SQL:  "SELECT pg_sleep(0.25)",
+		}},
+	})
+
+	analysis, ok := profiler.AnalyzeRequest("gin-request")
+	if !ok {
+		t.Fatal("AnalyzeRequest() did not find retained request")
+	}
+	var bottleneck Finding
+	for _, finding := range analysis.Findings {
+		if finding.Code == FindingSlowMiddleware {
+			t.Fatalf("inclusive Gin wrapper produced slow middleware finding: %+v", finding)
+		}
+		if finding.Code == FindingExecutionBottleneck {
+			bottleneck = finding
+		}
+	}
+	if bottleneck.EntryID != "nested-query" {
+		t.Fatalf("bottleneck = %+v, want nested-query", bottleneck)
+	}
+}
+
+func TestAnalyzeRequestKeepsMeasuredSlowMiddlewareFindingWithNestedOperation(t *testing.T) {
+	profiler := newProfiler()
+	t.Cleanup(func() { _ = profiler.Close() })
+	startedAt := time.Now().UTC()
+	workDuration := 150 * time.Millisecond
+	profiler.LogRequest(Request{
+		Meta: Meta{ID: "measured-middleware-request", StartedAt: startedAt, Duration: 250 * time.Millisecond},
+		Middlewares: []Middleware{{
+			Meta:         Meta{ID: "measured-middleware", ParentID: "measured-middleware-request", StartedAt: startedAt.Add(5 * time.Millisecond), Duration: 220 * time.Millisecond},
+			Name:         "authorization",
+			WorkDuration: &workDuration,
+		}},
+		Queries: []Query{{
+			Meta: Meta{ID: "middleware-query", ParentID: "measured-middleware", StartedAt: startedAt.Add(30 * time.Millisecond), Duration: 130 * time.Millisecond},
+			SQL:  "SELECT permissions FROM players WHERE id = 42",
+		}},
+	})
+
+	analysis, ok := profiler.AnalyzeRequest("measured-middleware-request")
+	if !ok {
+		t.Fatal("AnalyzeRequest() did not find retained request")
+	}
+	want := map[FindingCode]string{
+		FindingSlowMiddleware:      "measured-middleware",
+		FindingExecutionBottleneck: "middleware-query",
+	}
+	for _, finding := range analysis.Findings {
+		entryID, expected := want[finding.Code]
+		if !expected {
+			continue
+		}
+		if finding.EntryID != entryID {
+			t.Errorf("finding %q entry = %q, want %q", finding.Code, finding.EntryID, entryID)
+		}
+		delete(want, finding.Code)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing findings: %v; got %+v", want, analysis.Findings)
+	}
+}
+
+func TestExecutionBottleneckRequiresAbsoluteThresholdForOperationKind(t *testing.T) {
+	tests := []struct {
+		kind    Kind
+		minimum time.Duration
+	}{
+		{kind: KindQuery, minimum: 50 * time.Millisecond},
+		{kind: KindCache, minimum: 50 * time.Millisecond},
+		{kind: KindMiddleware, minimum: 100 * time.Millisecond},
+		{kind: KindHTTPCall, minimum: 500 * time.Millisecond},
+		{kind: KindEvent, minimum: 500 * time.Millisecond},
+		{kind: KindJob, minimum: 500 * time.Millisecond},
+		{kind: KindEmail, minimum: 500 * time.Millisecond},
+	}
+	for _, test := range tests {
+		t.Run(string(test.kind), func(t *testing.T) {
+			root := Entry{ID: "request", Kind: KindRequest}
+			below := Entry{ID: "operation", ParentID: root.ID, Kind: test.kind, DurationNS: int64(test.minimum - time.Millisecond)}
+			entries := []Entry{root, below}
+			if finding, ok := executionBottleneckFinding(root, entries, newAnalysisEntryHierarchy(entries), test.minimum); ok {
+				t.Fatalf("operation below %s threshold produced bottleneck: %+v", test.minimum, finding)
+			}
+
+			atThreshold := below
+			atThreshold.DurationNS = int64(test.minimum)
+			entries = []Entry{root, atThreshold}
+			finding, ok := executionBottleneckFinding(root, entries, newAnalysisEntryHierarchy(entries), test.minimum*2)
+			if !ok || finding.EntryID != atThreshold.ID {
+				t.Fatalf("operation at %s threshold did not produce bottleneck: %+v, ok=%v", test.minimum, finding, ok)
+			}
+		})
+	}
+}
+
+func TestAnalyzeRequestSeparatesSQLBottleneckFromSlowQuery(t *testing.T) {
+	profiler := newProfiler()
+	t.Cleanup(func() { _ = profiler.Close() })
+	startedAt := time.Now().UTC()
+	profiler.LogRequest(Request{
+		Meta: Meta{ID: "fast-request-with-dominant-query", StartedAt: startedAt, Duration: 90 * time.Millisecond},
+		Queries: []Query{{
+			Meta: Meta{ID: "dominant-query", ParentID: "fast-request-with-dominant-query", StartedAt: startedAt.Add(5 * time.Millisecond), Duration: 60 * time.Millisecond},
+			SQL:  "SELECT name FROM players WHERE id = 42",
+		}},
+	})
+
+	analysis, ok := profiler.AnalyzeRequest("fast-request-with-dominant-query")
+	if !ok {
+		t.Fatal("AnalyzeRequest() did not find retained request")
+	}
+	foundBottleneck := false
+	for _, finding := range analysis.Findings {
+		if finding.Code == FindingSlowQuery {
+			t.Fatalf("60 ms query produced slow-query finding: %+v", finding)
+		}
+		if finding.Code == FindingExecutionBottleneck && finding.EntryID == "dominant-query" {
+			foundBottleneck = true
+		}
+	}
+	if !foundBottleneck {
+		t.Fatalf("60 ms dominant query was not identified as bottleneck: %+v", analysis.Findings)
+	}
+}
+
+func TestAnalyzeRequestMarksVerySlowQueryAsDanger(t *testing.T) {
+	profiler := newProfiler()
+	t.Cleanup(func() { _ = profiler.Close() })
+	startedAt := time.Now().UTC()
+	profiler.LogRequest(Request{
+		Meta: Meta{ID: "very-slow-query-request", StartedAt: startedAt, Duration: 600 * time.Millisecond},
+		Queries: []Query{{
+			Meta: Meta{ID: "very-slow-query", ParentID: "very-slow-query-request", StartedAt: startedAt.Add(10 * time.Millisecond), Duration: 500 * time.Millisecond},
+			SQL:  "SELECT pg_sleep(0.5)",
+		}},
+	})
+
+	analysis, ok := profiler.AnalyzeRequest("very-slow-query-request")
+	if !ok {
+		t.Fatal("AnalyzeRequest() did not find retained request")
+	}
+	for _, finding := range analysis.Findings {
+		if finding.Code != FindingSlowQuery {
+			continue
+		}
+		if finding.Title != "Very slow query: 500 ms" || finding.Severity != FindingSeverityDanger {
+			t.Fatalf("very slow query finding = %+v", finding)
+		}
+		return
+	}
+	t.Fatalf("missing very slow query finding: %+v", analysis.Findings)
+}
+
 func TestAnalyzeScheduleProducesExecutionFindings(t *testing.T) {
 	profiler := newProfiler()
 	t.Cleanup(func() { _ = profiler.Close() })
