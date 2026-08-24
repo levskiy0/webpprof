@@ -23,4 +23,5 @@ vuln:
 
 check: deps docs verify vet test
 	node --check ui/app.js
+	node --test ui/app_test.cjs
 	git diff --check

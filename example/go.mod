@@ -3,7 +3,7 @@ module github.com/levskiy0/webpprof/example
 go 1.25.13
 
 require (
-	github.com/levskiy0/webpprof v0.4.0
+	github.com/levskiy0/webpprof v0.5.0
 	github.com/levskiy0/webpprof/storage/sqlite v0.1.0
 	modernc.org/sqlite v1.46.1
 )

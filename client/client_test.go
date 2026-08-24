@@ -125,6 +125,81 @@ func TestClientAuthenticatesAndInspectsRequest(t *testing.T) {
 	}
 }
 
+func TestClientInspectsStandaloneScheduleExecution(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
+	t.Cleanup(func() { _ = profiler.Close() })
+	profiler.LogSchedule(webpprof.Schedule{Meta: webpprof.Meta{ID: "schedule-1", Duration: time.Second}, Name: "players.refresh", State: "succeeded"})
+	profiler.LogQuery(webpprof.Query{Meta: webpprof.Meta{ID: "query-1", ParentID: "schedule-1"}, SQL: "SELECT * FROM players"})
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	profilerClient, err := client.New(server.URL + "/debug/webpprof/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := profilerClient.InspectEvent(t.Context(), "schedule-1", 100)
+	if err != nil {
+		t.Fatalf("InspectEvent() error = %v", err)
+	}
+	if report.Entry.Kind != webpprof.KindSchedule || report.Counts[webpprof.KindQuery] != 1 || len(report.Events) != 2 {
+		t.Fatalf("InspectEvent() = %+v", report)
+	}
+	if report.Events[1].ParentID != "schedule-1" {
+		t.Fatalf("query parent = %q", report.Events[1].ParentID)
+	}
+	if len(report.Findings) == 0 || report.Findings[0].Code != webpprof.FindingSlowSchedule {
+		t.Fatalf("schedule findings = %+v", report.Findings)
+	}
+}
+
+func TestClientInspectsStandaloneCallableExecution(t *testing.T) {
+	mux := http.NewServeMux()
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
+	t.Cleanup(func() { _ = profiler.Close() })
+	profiler.LogCallable(webpprof.Callable{Meta: webpprof.Meta{ID: "callable-1", Duration: time.Second}, Name: "players.rebuild-index", State: "failed", Error: "index unavailable"})
+	profiler.LogLog(webpprof.Log{Meta: webpprof.Meta{ID: "log-1", ParentID: "callable-1"}, Level: "error", Message: "index unavailable"})
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	profilerClient, err := client.New(server.URL + "/debug/webpprof/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := profilerClient.InspectEvent(t.Context(), "callable-1", 100)
+	if err != nil {
+		t.Fatalf("InspectEvent() error = %v", err)
+	}
+	if report.Entry.Kind != webpprof.KindCallable || report.Counts[webpprof.KindLog] != 1 || len(report.Events) != 2 {
+		t.Fatalf("InspectEvent() = %+v", report)
+	}
+	if len(report.Findings) < 2 || report.Findings[0].Code != webpprof.FindingSlowCallable {
+		t.Fatalf("callable findings = %+v", report.Findings)
+	}
+}
+
+func TestClientInspectsStandaloneTaskExecution(t *testing.T) {
+	mux := http.NewServeMux()
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
+	t.Cleanup(func() { _ = profiler.Close() })
+	profiler.LogTask(webpprof.Task{Meta: webpprof.Meta{ID: "task-1", Duration: 2 * time.Second}, Name: "reports.generate", State: "succeeded"})
+	profiler.LogQuery(webpprof.Query{Meta: webpprof.Meta{ID: "query-task", ParentID: "task-1"}, SQL: "SELECT 1"})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	profilerClient, err := client.New(server.URL + "/debug/webpprof/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := profilerClient.InspectEvent(t.Context(), "task-1", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Entry.Kind != webpprof.KindTask || report.Counts[webpprof.KindQuery] != 1 || len(report.Findings) == 0 || report.Findings[0].Code != webpprof.FindingSlowTask {
+		t.Fatalf("task report = %+v", report)
+	}
+}
+
 func TestClientInspectsRequestWithRedactedSensitiveHeaders(t *testing.T) {
 	mux := http.NewServeMux()
 	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
@@ -251,6 +326,18 @@ func TestClientReturnsTypedAPIError(t *testing.T) {
 	}
 	if apiError.StatusCode != http.StatusNotFound || !strings.Contains(apiError.Message, "not found") {
 		t.Fatalf("APIError = %+v", apiError)
+	}
+	_, err = profilerClient.ScheduleAnalysis(t.Context(), "missing")
+	if !errors.As(err, &apiError) {
+		t.Fatalf("ScheduleAnalysis() error = %v, want *client.APIError", err)
+	}
+	_, err = profilerClient.CallableAnalysis(t.Context(), "missing")
+	if !errors.As(err, &apiError) {
+		t.Fatalf("CallableAnalysis() error = %v, want *client.APIError", err)
+	}
+	_, err = profilerClient.TaskAnalysis(t.Context(), "missing")
+	if !errors.As(err, &apiError) {
+		t.Fatalf("TaskAnalysis() error = %v, want *client.APIError", err)
 	}
 }
 

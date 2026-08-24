@@ -27,6 +27,8 @@ func profilerOptions(metrics *demoMetrics, storage webpprof.EntryStorage) []webp
 			webpprof.KindJob,
 			webpprof.KindHTTPCall,
 			webpprof.KindSchedule,
+			webpprof.KindCallable,
+			webpprof.KindTask,
 		),
 		webpprof.WithSourceLink(func(frame webpprof.SourceFrame) string {
 			return fmt.Sprintf("vscode://file/%s:%d", frame.File, frame.Line)

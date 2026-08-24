@@ -18,8 +18,8 @@ go install github.com/levskiy0/webpprof/cmd/webpprof-mcp@latest
 webpprof-mcp --version
 ```
 
-For a reproducible install, use `@v0.4.1`. The corresponding repository tag is
-`cmd/webpprof-mcp/v0.4.1`. `go install` writes the executable
+For a reproducible install, use `@v0.5.0`. The corresponding repository tag is
+`cmd/webpprof-mcp/v0.5.0`. `go install` writes the executable
 to `GOBIN`, or to `GOPATH/bin` when `GOBIN` is unset; that directory must be in
 `PATH`.
 
@@ -92,7 +92,8 @@ MCP JSON configuration:
 | `webpprof_status` | Check connectivity, capacity, retention, storage, sampling, and the latest cursor. |
 | `webpprof_list_requests` | List requests with server-side method, path, status, min/max duration, tags, and cursor filters. |
 | `webpprof_inspect_request` | Return automatic findings and the correlated request timeline. |
-| `webpprof_search_events` | Search server-side by text, kind, request, tags, cursor, and min/max duration. |
+| `webpprof_inspect_event` | Return a standalone execution root, such as a Schedule, Callable, or Task, with automatic findings, counts, and its complete bounded `ParentID` tree. |
+| `webpprof_search_events` | Search server-side by text, kind, request, execution scope, tags, cursor, and min/max duration. |
 | `webpprof_wait_for_request` | Wait for the next matching request after an observed cursor. |
 
 A typical agent workflow is:
@@ -102,6 +103,13 @@ A typical agent workflow is:
 3. Call `webpprof_wait_for_request` with the remembered cursor.
 4. Pass the returned request ID to `webpprof_inspect_request`.
 5. Search supporting events when the finding needs more evidence.
+
+For a scheduled task or custom command, search with `kind: "schedule"` or
+`kind: "callable"`, then pass its ID to `webpprof_inspect_event`. The result
+contains automatic findings plus the root and its nested queries, logs, HTTP
+calls, cache operations, and other recorded descendants.
+`webpprof_search_events` accepts the same root ID as `scope_id` when a filtered
+view of that execution is sufficient.
 
 Captured bodies, values, arguments, and stacks remain omitted unless
 `include_payloads` is explicitly enabled. Tools never replay requests, clear

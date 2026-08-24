@@ -21,9 +21,15 @@ const (
 	analysisCacheQueryMaxGap      = 100 * time.Millisecond
 	analysisCacheMissRateMinimum  = 5
 	analysisSlowRequest           = 500 * time.Millisecond
+	analysisSlowSchedule          = 500 * time.Millisecond
+	analysisSlowCallable          = 500 * time.Millisecond
+	analysisSlowTask              = time.Second
 	analysisSlowQuery             = 100 * time.Millisecond
 	analysisSlowHTTPCall          = 500 * time.Millisecond
 	analysisSlowMiddleware        = 100 * time.Millisecond
+	analysisSlowEvent             = 500 * time.Millisecond
+	analysisBottleneckMinimum     = 100 * time.Millisecond
+	analysisBottleneckShare       = 50
 )
 
 // FindingCode identifies a stable class of automatic request finding.
@@ -34,6 +40,12 @@ const (
 	FindingPossibleNPlusOne FindingCode = "possible_n_plus_one"
 	// FindingSQLDominatesRequest reports requests that spend most of their time in SQL.
 	FindingSQLDominatesRequest FindingCode = "sql_dominates_request"
+	// FindingSQLDominatesSchedule reports schedules that spend most of their time in SQL.
+	FindingSQLDominatesSchedule FindingCode = "sql_dominates_schedule"
+	// FindingSQLDominatesCallable reports callables that spend most of their time in SQL.
+	FindingSQLDominatesCallable FindingCode = "sql_dominates_callable"
+	// FindingSQLDominatesTask reports tasks that spend most of their time in SQL.
+	FindingSQLDominatesTask FindingCode = "sql_dominates_task"
 	// FindingSequentialHTTPCalls reports outbound calls that appear to run serially.
 	FindingSequentialHTTPCalls FindingCode = "sequential_http_calls"
 	// FindingCacheMissQueryBurst reports repeated cache misses followed by queries.
@@ -42,10 +54,22 @@ const (
 	FindingSlowMiddleware FindingCode = "slow_middleware"
 	// FindingSlowRequest reports requests above the built-in duration threshold.
 	FindingSlowRequest FindingCode = "slow_request"
+	// FindingSlowSchedule reports schedule executions above the built-in duration threshold.
+	FindingSlowSchedule FindingCode = "slow_schedule"
+	// FindingSlowCallable reports callable executions above the built-in duration threshold.
+	FindingSlowCallable FindingCode = "slow_callable"
+	// FindingSlowTask reports tasks above the built-in duration threshold.
+	FindingSlowTask FindingCode = "slow_task"
 	// FindingSlowQuery reports queries above the built-in duration threshold.
 	FindingSlowQuery FindingCode = "slow_query"
 	// FindingSlowHTTPCall reports outbound calls above the built-in duration threshold.
 	FindingSlowHTTPCall FindingCode = "slow_http_call"
+	// FindingSlowEvent reports measured custom events above the built-in duration threshold.
+	FindingSlowEvent FindingCode = "slow_event"
+	// FindingExecutionBottleneck reports the child operation dominating an execution.
+	FindingExecutionBottleneck FindingCode = "execution_bottleneck"
+	// FindingQueryPlanIssue reports a normalized concern found in a stored EXPLAIN plan.
+	FindingQueryPlanIssue FindingCode = "query_plan_issue"
 	// FindingFailedOperation reports a related operation carrying an error or failed status.
 	FindingFailedOperation FindingCode = "failed_operation"
 	// FindingHighCacheMissRate reports request timelines dominated by cache misses.
@@ -64,7 +88,7 @@ const (
 	FindingSeverityDanger FindingSeverity = "danger"
 )
 
-// Finding is an actionable conclusion produced from a recorded request.
+// Finding is an actionable conclusion produced from a recorded execution.
 // EntryID points to the most useful related entry to open in the viewer.
 type Finding struct {
 	Code            FindingCode     `json:"code"`
@@ -82,6 +106,30 @@ type RequestAnalysis struct {
 	RequestDurationNS int64     `json:"request_duration_ns"`
 	GeneratedAt       time.Time `json:"generated_at"`
 	Findings          []Finding `json:"findings"`
+}
+
+// ScheduleAnalysis contains automatic findings for one captured Schedule execution.
+type ScheduleAnalysis struct {
+	ScheduleID         string    `json:"schedule_id"`
+	ScheduleDurationNS int64     `json:"schedule_duration_ns"`
+	GeneratedAt        time.Time `json:"generated_at"`
+	Findings           []Finding `json:"findings"`
+}
+
+// CallableAnalysis contains automatic findings for one captured Callable execution.
+type CallableAnalysis struct {
+	CallableID         string    `json:"callable_id"`
+	CallableDurationNS int64     `json:"callable_duration_ns"`
+	GeneratedAt        time.Time `json:"generated_at"`
+	Findings           []Finding `json:"findings"`
+}
+
+// TaskAnalysis contains automatic findings for one captured Task execution.
+type TaskAnalysis struct {
+	TaskID         string    `json:"task_id"`
+	TaskDurationNS int64     `json:"task_duration_ns"`
+	GeneratedAt    time.Time `json:"generated_at"`
+	Findings       []Finding `json:"findings"`
 }
 
 type analyzedQuery struct {
@@ -106,6 +154,11 @@ type analyzedMiddleware struct {
 	middleware Middleware
 }
 
+type analyzedEvent struct {
+	entry Entry
+	event Event
+}
+
 // AnalyzeRequest analyzes the complete stored timeline for a request. It
 // returns false when requestID does not identify a retained Request entry.
 func (p *Profiler) AnalyzeRequest(requestID string) (RequestAnalysis, bool) {
@@ -119,12 +172,87 @@ func (p *Profiler) AnalyzeRequest(requestID string) (RequestAnalysis, bool) {
 	return analyzeRequest(request, entries), true
 }
 
+// AnalyzeSchedule analyzes the complete ParentID hierarchy for a Schedule. It
+// returns false when scheduleID does not identify a retained Schedule entry.
+func (p *Profiler) AnalyzeSchedule(scheduleID string) (ScheduleAnalysis, bool) {
+	if p == nil || p.store == nil || scheduleID == "" {
+		return ScheduleAnalysis{}, false
+	}
+	schedule, entries, ok := p.store.scopeEntries(scheduleID)
+	if !ok || schedule.Kind != KindSchedule {
+		return ScheduleAnalysis{}, false
+	}
+	return analyzeSchedule(schedule, entries), true
+}
+
+// AnalyzeCallable analyzes the complete ParentID hierarchy for a Callable. It
+// returns false when callableID does not identify a retained Callable entry.
+func (p *Profiler) AnalyzeCallable(callableID string) (CallableAnalysis, bool) {
+	if p == nil || p.store == nil || callableID == "" {
+		return CallableAnalysis{}, false
+	}
+	callable, entries, ok := p.store.scopeEntries(callableID)
+	if !ok || callable.Kind != KindCallable {
+		return CallableAnalysis{}, false
+	}
+	return analyzeCallable(callable, entries), true
+}
+
+// AnalyzeTask analyzes the complete ParentID hierarchy for a Task. It returns
+// false when taskID does not identify a retained Task entry.
+func (p *Profiler) AnalyzeTask(taskID string) (TaskAnalysis, bool) {
+	if p == nil || p.store == nil || taskID == "" {
+		return TaskAnalysis{}, false
+	}
+	task, entries, ok := p.store.scopeEntries(taskID)
+	if !ok || task.Kind != KindTask {
+		return TaskAnalysis{}, false
+	}
+	return analyzeTask(task, entries), true
+}
+
 func analyzeRequest(request Entry, entries []Entry) RequestAnalysis {
 	entries = directRequestEntries(request.ID, entries)
+	duration, findings := analyzeExecution(request, entries, "request", FindingSQLDominatesRequest)
+	return RequestAnalysis{
+		RequestID:         request.ID,
+		RequestDurationNS: int64(duration),
+		GeneratedAt:       time.Now().UTC(),
+		Findings:          findings,
+	}
+}
+
+func analyzeSchedule(schedule Entry, entries []Entry) ScheduleAnalysis {
+	duration, findings := analyzeExecution(schedule, entries, "schedule", FindingSQLDominatesSchedule)
+	return ScheduleAnalysis{
+		ScheduleID:         schedule.ID,
+		ScheduleDurationNS: int64(duration),
+		GeneratedAt:        time.Now().UTC(),
+		Findings:           findings,
+	}
+}
+
+func analyzeCallable(callable Entry, entries []Entry) CallableAnalysis {
+	duration, findings := analyzeExecution(callable, entries, "callable", FindingSQLDominatesCallable)
+	return CallableAnalysis{
+		CallableID:         callable.ID,
+		CallableDurationNS: int64(duration),
+		GeneratedAt:        time.Now().UTC(),
+		Findings:           findings,
+	}
+}
+
+func analyzeTask(task Entry, entries []Entry) TaskAnalysis {
+	duration, findings := analyzeExecution(task, entries, "task", FindingSQLDominatesTask)
+	return TaskAnalysis{TaskID: task.ID, TaskDurationNS: int64(duration), GeneratedAt: time.Now().UTC(), Findings: findings}
+}
+
+func analyzeExecution(root Entry, entries []Entry, label string, sqlDominatesCode FindingCode) (time.Duration, []Finding) {
 	queries := make([]analyzedQuery, 0)
 	caches := make([]analyzedCache, 0)
 	httpCalls := make([]analyzedHTTPCall, 0)
 	middlewares := make([]analyzedMiddleware, 0)
+	events := make([]analyzedEvent, 0)
 
 	for _, entry := range entries {
 		switch entry.Kind {
@@ -133,7 +261,8 @@ func analyzeRequest(request Entry, entries []Entry) RequestAnalysis {
 			if json.Unmarshal(entry.Data, &query) != nil {
 				continue
 			}
-			queries = append(queries, analyzedQuery{entry: entry, query: query, fingerprint: queryFingerprint(query.SQL)})
+			fingerprint := queryFingerprint(query.SQL)
+			queries = append(queries, analyzedQuery{entry: entry, query: query, fingerprint: fingerprint})
 		case KindCache:
 			var cache Cache
 			if json.Unmarshal(entry.Data, &cache) != nil {
@@ -152,6 +281,12 @@ func analyzeRequest(request Entry, entries []Entry) RequestAnalysis {
 				continue
 			}
 			middlewares = append(middlewares, analyzedMiddleware{entry: entry, middleware: middleware})
+		case KindEvent:
+			var event Event
+			if json.Unmarshal(entry.Data, &event) != nil {
+				continue
+			}
+			events = append(events, analyzedEvent{entry: entry, event: event})
 		}
 	}
 
@@ -159,36 +294,38 @@ func analyzeRequest(request Entry, entries []Entry) RequestAnalysis {
 	sort.Slice(caches, func(i, j int) bool { return entryHappenedBefore(caches[i].entry, caches[j].entry) })
 	sort.Slice(httpCalls, func(i, j int) bool { return entryHappenedBefore(httpCalls[i].entry, httpCalls[j].entry) })
 	sort.Slice(middlewares, func(i, j int) bool { return entryHappenedBefore(middlewares[i].entry, middlewares[j].entry) })
+	sort.Slice(events, func(i, j int) bool { return entryHappenedBefore(events[i].entry, events[j].entry) })
 
-	effectiveDuration := requestAnalysisDuration(request, entries)
+	effectiveDuration := executionAnalysisDuration(root, entries)
 	cacheFindings, cacheExplainedQueries := cacheMissQueryFindings(caches, queries)
 	findings := nPlusOneFindings(queries, cacheExplainedQueries)
-	if finding, ok := sqlShareFinding(queries, request.StartedAt, effectiveDuration); ok {
+	if finding, ok := sqlShareFinding(queries, root.StartedAt, effectiveDuration, label, sqlDominatesCode); ok {
 		findings = append(findings, finding)
 	}
 	findings = append(findings, sequentialHTTPFindings(httpCalls)...)
 	findings = append(findings, cacheFindings...)
 	findings = append(findings, slowMiddlewareFindings(middlewares)...)
-	findings = append(findings, legacyPerformanceFindings(request, queries, httpCalls, caches, entries)...)
-
-	return RequestAnalysis{
-		RequestID:         request.ID,
-		RequestDurationNS: int64(effectiveDuration),
-		GeneratedAt:       time.Now().UTC(),
-		Findings:          findings,
+	findings = append(findings, slowEventFindings(events)...)
+	if finding, ok := executionBottleneckFinding(root, entries, effectiveDuration); ok {
+		findings = append(findings, finding)
 	}
+	findings = append(findings, queryPlanFindings(queries)...)
+	findings = append(findings, legacyPerformanceFindings(root, queries, httpCalls, caches, entries, len(cacheFindings) == 0)...)
+
+	return effectiveDuration, findings
 }
 
 func nPlusOneFindings(queries []analyzedQuery, excluded map[string]struct{}) []Finding {
 	groups := make(map[string][]analyzedQuery)
 	for _, query := range queries {
-		if query.fingerprint == "" {
+		group := queryNPlusOneGroup(query)
+		if group == "" {
 			continue
 		}
 		if _, skip := excluded[query.entry.ID]; skip {
 			continue
 		}
-		groups[query.fingerprint] = append(groups[query.fingerprint], query)
+		groups[group] = append(groups[group], query)
 	}
 
 	fingerprints := make([]string, 0, len(groups))
@@ -220,8 +357,8 @@ func nPlusOneFindings(queries []analyzedQuery, excluded map[string]struct{}) []F
 	return findings
 }
 
-func sqlShareFinding(queries []analyzedQuery, requestStartedAt time.Time, requestDuration time.Duration) (Finding, bool) {
-	if requestDuration <= 0 || len(queries) == 0 {
+func sqlShareFinding(queries []analyzedQuery, executionStartedAt time.Time, executionDuration time.Duration, executionLabel string, code FindingCode) (Finding, bool) {
+	if executionDuration <= 0 || len(queries) == 0 {
 		return Finding{}, false
 	}
 	type interval struct {
@@ -238,13 +375,13 @@ func sqlShareFinding(queries []analyzedQuery, requestStartedAt time.Time, reques
 		}
 		start := query.entry.StartedAt
 		end := start.Add(duration)
-		if !requestStartedAt.IsZero() {
-			requestEnd := requestStartedAt.Add(requestDuration)
-			if start.Before(requestStartedAt) {
-				start = requestStartedAt
+		if !executionStartedAt.IsZero() {
+			executionEnd := executionStartedAt.Add(executionDuration)
+			if start.Before(executionStartedAt) {
+				start = executionStartedAt
 			}
-			if end.After(requestEnd) {
-				end = requestEnd
+			if end.After(executionEnd) {
+				end = executionEnd
 			}
 		}
 		if !end.After(start) {
@@ -273,15 +410,15 @@ func sqlShareFinding(queries []analyzedQuery, requestStartedAt time.Time, reques
 		total += current.end.Sub(current.start)
 		coveredUntil = current.end
 	}
-	percentage := int(math.Round(float64(total) / float64(requestDuration) * 100))
+	percentage := int(math.Round(float64(total) / float64(executionDuration) * 100))
 	percentage = min(percentage, 100)
 	if percentage < analysisSQLShareMinimum {
 		return Finding{}, false
 	}
 	return Finding{
-		Code:            FindingSQLDominatesRequest,
+		Code:            code,
 		Severity:        FindingSeverityWarning,
-		Title:           fmt.Sprintf("SQL consumed %d%% of request", percentage),
+		Title:           fmt.Sprintf("SQL consumed %d%% of %s", percentage, executionLabel),
 		Detail:          fmt.Sprintf("%s wall-clock coverage across %d queries", findingDuration(total), len(contributing)),
 		Suggestion:      "Inspect the slowest query and reduce query count or execution time.",
 		EntryID:         slowest.entry.ID,
@@ -343,7 +480,7 @@ func cacheMissQueryFindings(caches []analyzedCache, queries []analyzedQuery) ([]
 			Severity:        FindingSeverityWarning,
 			Title:           fmt.Sprintf("Cache miss followed by %d identical queries", len(repeated)),
 			Detail:          fmt.Sprintf("Key %q · %s", cache.cache.Key, compactFindingText(repeated[0].query.SQL, 140)),
-			Suggestion:      "Populate the cache once and reuse the loaded value for this request.",
+			Suggestion:      "Populate the cache once and reuse the loaded value for this execution.",
 			EntryID:         cache.entry.ID,
 			RelatedEntryIDs: entryIDs,
 		})
@@ -432,16 +569,191 @@ func slowMiddlewareFindings(middlewares []analyzedMiddleware) []Finding {
 	return findings
 }
 
-func legacyPerformanceFindings(request Entry, queries []analyzedQuery, calls []analyzedHTTPCall, caches []analyzedCache, entries []Entry) []Finding {
+func slowEventFindings(events []analyzedEvent) []Finding {
 	findings := make([]Finding, 0)
-	if duration := time.Duration(request.DurationNS); duration >= analysisSlowRequest {
+	for _, operation := range events {
+		duration := time.Duration(operation.entry.DurationNS)
+		if duration < analysisSlowEvent {
+			continue
+		}
+		name := strings.TrimSpace(operation.event.Name)
+		if name == "" {
+			name = "unnamed"
+		}
 		findings = append(findings, Finding{
-			Code: FindingSlowRequest, Severity: FindingSeverityDanger,
-			Title:      "Slow request: " + findingDuration(duration),
-			Detail:     "Recorded request duration exceeded 500 ms.",
-			Suggestion: "Start with the largest related operation in the timeline.",
-			EntryID:    request.ID, RelatedEntryIDs: []string{request.ID},
+			Code:            FindingSlowEvent,
+			Severity:        FindingSeverityWarning,
+			Title:           fmt.Sprintf("Event %s took %s", name, findingDuration(duration)),
+			Detail:          "Measured event duration exceeded 500 ms.",
+			Suggestion:      "Inspect this operation and split or instrument its expensive stages.",
+			EntryID:         operation.entry.ID,
+			RelatedEntryIDs: []string{operation.entry.ID},
 		})
+	}
+	return findings
+}
+
+func executionBottleneckFinding(root Entry, entries []Entry, executionDuration time.Duration) (Finding, bool) {
+	if executionDuration <= 0 {
+		return Finding{}, false
+	}
+	var bottleneck Entry
+	for _, entry := range entries {
+		if entry.ID == root.ID || entry.DurationNS <= bottleneck.DurationNS || !bottleneckCandidate(entry.Kind) {
+			continue
+		}
+		bottleneck = entry
+	}
+	duration := time.Duration(bottleneck.DurationNS)
+	share := int(math.Round(float64(duration) / float64(executionDuration) * 100))
+	share = min(share, 100)
+	if duration < analysisBottleneckMinimum || share < analysisBottleneckShare {
+		return Finding{}, false
+	}
+	label, name := findingEntryLabel(bottleneck)
+	return Finding{
+		Code:            FindingExecutionBottleneck,
+		Severity:        FindingSeverityWarning,
+		Title:           fmt.Sprintf("Bottleneck: %s %s took %s", label, name, findingDuration(duration)),
+		Detail:          fmt.Sprintf("This operation accounts for about %d%% of the execution duration.", share),
+		Suggestion:      "Open the operation and instrument its children to isolate the expensive work.",
+		EntryID:         bottleneck.ID,
+		RelatedEntryIDs: []string{bottleneck.ID},
+	}, true
+}
+
+func bottleneckCandidate(kind Kind) bool {
+	switch kind {
+	case KindQuery, KindCache, KindHTTPCall, KindMiddleware, KindEvent, KindJob, KindEmail:
+		return true
+	default:
+		return false
+	}
+}
+
+func findingEntryLabel(entry Entry) (string, string) {
+	switch entry.Kind {
+	case KindEvent:
+		var event Event
+		if json.Unmarshal(entry.Data, &event) == nil {
+			return "event", compactFindingText(event.Name, 80)
+		}
+	case KindQuery:
+		var query Query
+		if json.Unmarshal(entry.Data, &query) == nil {
+			return "query", compactFindingText(query.SQL, 80)
+		}
+	case KindHTTPCall:
+		var call HTTPCall
+		if json.Unmarshal(entry.Data, &call) == nil {
+			return "HTTP call", compactFindingText(strings.TrimSpace(call.Method+" "+call.URL), 80)
+		}
+	case KindMiddleware:
+		var middleware Middleware
+		if json.Unmarshal(entry.Data, &middleware) == nil {
+			return "middleware", compactFindingText(middleware.Name, 80)
+		}
+	}
+	return string(entry.Kind), "operation"
+}
+
+func queryPlanFindings(queries []analyzedQuery) []Finding {
+	findings := make([]Finding, 0)
+	for _, analyzed := range queries {
+		plan := analyzed.query.Plan
+		if plan == nil || strings.TrimSpace(plan.Text) == "" {
+			continue
+		}
+		issues := plan.Issues
+		if len(issues) == 0 {
+			issues = DetectQueryPlanIssues(analyzed.query.Driver, plan.Text)
+		}
+		visible := make([]QueryPlanIssue, 0, len(issues))
+		for _, issue := range issues {
+			if issue.Code == QueryPlanIssueLargeEstimate || time.Duration(analyzed.entry.DurationNS) >= analysisSlowQuery {
+				visible = append(visible, issue)
+			}
+		}
+		if len(visible) == 0 {
+			continue
+		}
+		labels := make([]string, 0, len(visible))
+		for _, issue := range visible {
+			labels = append(labels, queryPlanIssueLabel(issue))
+		}
+		findings = append(findings, Finding{
+			Code:            FindingQueryPlanIssue,
+			Severity:        FindingSeverityWarning,
+			Title:           "EXPLAIN: " + strings.Join(labels, ", "),
+			Detail:          compactFindingText(visible[0].Detail, 180),
+			Suggestion:      "Review filters, indexes, join order, and estimated row counts in the stored plan.",
+			EntryID:         analyzed.entry.ID,
+			RelatedEntryIDs: []string{analyzed.entry.ID},
+		})
+	}
+	return findings
+}
+
+func queryPlanIssueLabel(issue QueryPlanIssue) string {
+	switch issue.Code {
+	case QueryPlanIssueFullScan:
+		if issue.Relation != "" {
+			return "full scan on " + issue.Relation
+		}
+		return "full table scan"
+	case QueryPlanIssueTemporarySort:
+		return "temporary sort"
+	case QueryPlanIssueLargeEstimate:
+		return fmt.Sprintf("large estimate (%d rows)", issue.EstimatedRows)
+	default:
+		return string(issue.Code)
+	}
+}
+
+func legacyPerformanceFindings(root Entry, queries []analyzedQuery, calls []analyzedHTTPCall, caches []analyzedCache, entries []Entry, includeCacheMissRate bool) []Finding {
+	findings := make([]Finding, 0)
+	duration := time.Duration(root.DurationNS)
+	switch root.Kind {
+	case KindRequest:
+		if duration >= analysisSlowRequest {
+			findings = append(findings, Finding{
+				Code: FindingSlowRequest, Severity: FindingSeverityDanger,
+				Title:      "Slow request: " + findingDuration(duration),
+				Detail:     "Recorded request duration exceeded 500 ms.",
+				Suggestion: "Start with the largest related operation in the timeline.",
+				EntryID:    root.ID, RelatedEntryIDs: []string{root.ID},
+			})
+		}
+	case KindSchedule:
+		if duration >= analysisSlowSchedule {
+			findings = append(findings, Finding{
+				Code: FindingSlowSchedule, Severity: FindingSeverityWarning,
+				Title:      "Slow schedule: " + findingDuration(duration),
+				Detail:     "Recorded schedule duration exceeded 500 ms.",
+				Suggestion: "Start with the largest child operation in the execution timeline.",
+				EntryID:    root.ID, RelatedEntryIDs: []string{root.ID},
+			})
+		}
+	case KindCallable:
+		if duration >= analysisSlowCallable {
+			findings = append(findings, Finding{
+				Code: FindingSlowCallable, Severity: FindingSeverityWarning,
+				Title:      "Slow callable: " + findingDuration(duration),
+				Detail:     "Recorded callable duration exceeded 500 ms.",
+				Suggestion: "Start with the largest child operation in the execution timeline.",
+				EntryID:    root.ID, RelatedEntryIDs: []string{root.ID},
+			})
+		}
+	case KindTask:
+		if duration >= analysisSlowTask {
+			findings = append(findings, Finding{
+				Code: FindingSlowTask, Severity: FindingSeverityWarning,
+				Title:      "Slow task: " + findingDuration(duration),
+				Detail:     "Recorded task duration exceeded 1 s.",
+				Suggestion: "Start with the largest child operation in the execution timeline.",
+				EntryID:    root.ID, RelatedEntryIDs: []string{root.ID},
+			})
+		}
 	}
 	for _, query := range queries {
 		duration := time.Duration(query.entry.DurationNS)
@@ -469,21 +781,59 @@ func legacyPerformanceFindings(request Entry, queries []analyzedQuery, calls []a
 			EntryID:    operation.entry.ID, RelatedEntryIDs: []string{operation.entry.ID},
 		})
 	}
-	findings = append(findings, failedOperationFindings(entries)...)
-	if finding, ok := cacheMissRateFinding(caches); ok {
-		findings = append(findings, finding)
+	findings = append(findings, failedOperationFindings(entries, root.Kind == KindSchedule || root.Kind == KindCallable || root.Kind == KindTask)...)
+	if includeCacheMissRate {
+		if finding, ok := cacheMissRateFinding(caches); ok {
+			findings = append(findings, finding)
+		}
 	}
 	return findings
 }
 
-func failedOperationFindings(entries []Entry) []Finding {
+func failedOperationFindings(entries []Entry, includeExecutionRoots bool) []Finding {
 	findings := make([]Finding, 0)
 	for _, entry := range entries {
 		var label, detail string
 		switch entry.Kind {
+		case KindRequest:
+			var request Request
+			if json.Unmarshal(entry.Data, &request) != nil || request.Error == "" && request.Status < 500 {
+				continue
+			}
+			label, detail = "request", strings.TrimSpace(request.Method+" "+request.Path)
+		case KindQuery:
+			var query Query
+			if json.Unmarshal(entry.Data, &query) != nil || query.Error == "" {
+				continue
+			}
+			label, detail = "query", query.SQL
+		case KindCache:
+			var cache Cache
+			if json.Unmarshal(entry.Data, &cache) != nil || cache.Error == "" {
+				continue
+			}
+			label, detail = "cache operation", strings.TrimSpace(cache.Operation+" "+cache.Key)
+		case KindEvent:
+			var event Event
+			if json.Unmarshal(entry.Data, &event) != nil || event.Error == "" && !failedState(event.Status) {
+				continue
+			}
+			label, detail = "event", event.Name
+		case KindMiddleware:
+			var middleware Middleware
+			if json.Unmarshal(entry.Data, &middleware) != nil || middleware.Error == "" && !failedState(middleware.State) {
+				continue
+			}
+			label, detail = "middleware", middleware.Name
+		case KindException:
+			var exception Exception
+			if json.Unmarshal(entry.Data, &exception) != nil {
+				continue
+			}
+			label, detail = "exception", strings.TrimSpace(exception.Type+" "+exception.Message)
 		case KindJob:
 			var job Job
-			if json.Unmarshal(entry.Data, &job) != nil || job.Error == "" && !strings.EqualFold(job.State, "failed") {
+			if json.Unmarshal(entry.Data, &job) != nil || job.Error == "" && !failedState(job.State) {
 				continue
 			}
 			label, detail = "Job", job.Name
@@ -499,6 +849,33 @@ func failedOperationFindings(entries []Entry) []Finding {
 				continue
 			}
 			label, detail = "HTTP call", strings.TrimSpace(call.Method+" "+call.URL)
+		case KindSchedule:
+			if !includeExecutionRoots {
+				continue
+			}
+			var schedule Schedule
+			if json.Unmarshal(entry.Data, &schedule) != nil || schedule.Error == "" && schedule.Panic == "" && !failedState(schedule.State) {
+				continue
+			}
+			label, detail = "scheduled task", schedule.Name
+		case KindCallable:
+			if !includeExecutionRoots {
+				continue
+			}
+			var callable Callable
+			if json.Unmarshal(entry.Data, &callable) != nil || callable.Error == "" && callable.Panic == "" && !failedState(callable.State) {
+				continue
+			}
+			label, detail = "callable", callable.Name
+		case KindTask:
+			if !includeExecutionRoots {
+				continue
+			}
+			var task Task
+			if json.Unmarshal(entry.Data, &task) != nil || task.Error == "" && task.Panic == "" && !failedState(task.State) {
+				continue
+			}
+			label, detail = "task", task.Name
 		default:
 			continue
 		}
@@ -604,17 +981,17 @@ func safeConcurrentHTTPMethod(method string) bool {
 	}
 }
 
-func requestAnalysisDuration(request Entry, entries []Entry) time.Duration {
-	duration := time.Duration(max(request.DurationNS, 0))
-	if request.StartedAt.IsZero() {
+func executionAnalysisDuration(root Entry, entries []Entry) time.Duration {
+	duration := time.Duration(max(root.DurationNS, 0))
+	if root.StartedAt.IsZero() {
 		return duration
 	}
 	for _, entry := range entries {
-		if entry.ID == request.ID || entry.StartedAt.IsZero() || entry.StartedAt.Before(request.StartedAt) {
+		if entry.ID == root.ID || entry.StartedAt.IsZero() || entry.StartedAt.Before(root.StartedAt) {
 			continue
 		}
 		end := entry.StartedAt.Add(time.Duration(max(entry.DurationNS, 0)))
-		if span := end.Sub(request.StartedAt); span > duration {
+		if span := end.Sub(root.StartedAt); span > duration {
 			duration = span
 		}
 	}
@@ -641,7 +1018,40 @@ func httpCallHost(rawURL string) string {
 	if err != nil {
 		return ""
 	}
-	return strings.ToLower(parsed.Hostname())
+	return strings.ToLower(parsed.Host)
+}
+
+func queryNPlusOneGroup(query analyzedQuery) string {
+	operation := strings.ToUpper(strings.TrimSpace(query.query.Operation))
+	if operation == "" {
+		operation = sqlStatementOperation(query.query.SQL)
+	}
+	if operation != "SELECT" && operation != "WITH" || query.fingerprint == "" {
+		return ""
+	}
+	locality := query.entry.ParentID
+	if len(query.query.Callsite) > 0 {
+		frame := query.query.Callsite[0]
+		locality = frame.File + ":" + fmt.Sprint(frame.Line) + ":" + frame.Function
+	}
+	return strings.ToLower(query.query.Connection) + "\x00" + strings.ToLower(query.query.Database) + "\x00" + locality + "\x00" + query.fingerprint
+}
+
+func sqlStatementOperation(sql string) string {
+	fields := strings.Fields(sql)
+	if len(fields) == 0 {
+		return ""
+	}
+	return strings.ToUpper(fields[0])
+}
+
+func failedState(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "failed", "failure", "error", "panicked", "panic", "bounced":
+		return true
+	default:
+		return false
+	}
 }
 
 func queryFingerprint(sql string) string {

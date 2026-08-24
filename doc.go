@@ -2,8 +2,8 @@
 // for Go web applications.
 //
 // It records bounded, redacted diagnostic entries for inbound requests, SQL,
-// cache operations, jobs, logs, email, outbound HTTP calls, schedules,
-// middleware, exceptions, and custom events. Related work can be correlated
+// cache operations, jobs, logs, email, outbound HTTP calls, schedules, callables,
+// measured tasks, middleware, exceptions, and custom events. Related work can be correlated
 // through context.Context and inspected in the embedded dashboard.
 //
 // # Getting started

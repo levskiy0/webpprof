@@ -1227,6 +1227,13 @@ pre code {
 .gantt-stat span { color: #777f8c; font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: .04em; }
 .gantt-stat strong { overflow: hidden; color: #242a33; font-size: 16px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .gantt-stat.bottleneck strong { color: #9b3c22; }
+.gantt-stat.bottleneck[data-kind="query"] strong {
+  color: #e83e8c;
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 21px;
+}
 
 .gantt-breakdown {
   display: grid;
@@ -1258,6 +1265,8 @@ pre code {
 .gantt-breakdown [data-kind="log"], .gantt-legend [data-kind="log"], .gantt-bar[data-kind="log"] { fill: #60a5fa; background: #60a5fa; }
 .gantt-breakdown [data-kind="http_call"], .gantt-legend [data-kind="http_call"], .gantt-bar[data-kind="http_call"] { fill: #f59e0b; background: #f59e0b; }
 .gantt-breakdown [data-kind="schedule"], .gantt-legend [data-kind="schedule"], .gantt-bar[data-kind="schedule"] { fill: #a855f7; background: #a855f7; }
+.gantt-breakdown [data-kind="callable"], .gantt-legend [data-kind="callable"], .gantt-bar[data-kind="callable"] { fill: #0f9f8f; background: #0f9f8f; }
+.gantt-breakdown [data-kind="task"], .gantt-legend [data-kind="task"], .gantt-bar[data-kind="task"] { fill: #e08b26; background: #e08b26; }
 .gantt-breakdown [data-kind="exception"], .gantt-legend [data-kind="exception"], .gantt-bar[data-kind="exception"] { fill: #ef4444; background: #ef4444; }
 .gantt-breakdown [data-kind="event"], .gantt-legend [data-kind="event"], .gantt-bar[data-kind="event"] { fill: #ec4899; background: #ec4899; }
 
@@ -1536,6 +1545,7 @@ pre code {
 
 .diagnostic-row strong { color: #343a45; font-size: 14px; font-weight: 500; }
 .diagnostic-row small { margin-top: 4px; overflow: hidden; color: #858c97; font: 12px "SFMono-Regular", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.diagnostic-row .diagnostic-suggestion { color: #616975; }
 
 .diagnostic-severity {
   border: 1px solid #efd48c;
@@ -2371,3 +2381,14 @@ pre code {
     border-right: 0;
   }
 }
+.plan-issues {
+  padding: 12px 20px;
+  border-bottom: 1px solid #f0d59a;
+  background: #fff8e8;
+  color: #7d5b16;
+  font-size: 12px;
+}
+
+.plan-issues strong { display: block; margin-bottom: 5px; font-size: 13px; }
+.plan-issues ul { margin: 0; padding-left: 18px; }
+.plan-issues li + li { margin-top: 3px; }

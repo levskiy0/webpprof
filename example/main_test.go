@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/levskiy0/webpprof"
+	webpprofcallable "github.com/levskiy0/webpprof/profiler/callable"
 	webpprofhttp "github.com/levskiy0/webpprof/profiler/http"
+	webpprofschedule "github.com/levskiy0/webpprof/profiler/schedule"
 	webpprofslog "github.com/levskiy0/webpprof/profiler/slog"
 	webpprofsql "github.com/levskiy0/webpprof/profiler/sql"
 	modernsqlite "modernc.org/sqlite"
@@ -29,6 +31,9 @@ func TestHomePageUsesAjaxActionsAndInlineResponse(t *testing.T) {
 	for _, expected := range []string{
 		`data-request="/api/players/42?tenant=acme"`,
 		`data-method="POST"`,
+		`data-request="/api/schedules/refresh-players?tenant=umbrella"`,
+		`data-request="/api/callables/rebuild-player-index?tenant=acme"`,
+		`data-request="/api/tasks/generate-player-report?tenant=umbrella"`,
 		`data-request="/api/manual/custom-profiler?tenant=acme"`,
 		`<code id="response" aria-live="polite">`,
 		`await fetch(target`,
@@ -272,6 +277,197 @@ func TestIncrementViewsUsesTransaction(t *testing.T) {
 	}
 }
 
+func TestScheduledRefreshCreatesStandaloneExecutionWithQueryAndLog(t *testing.T) {
+	app, profiler, profilerMux := newTestApplication(t)
+	capture := profiler.BeginRequest(webpprof.Request{
+		Meta:   webpprof.Meta{ID: "schedule-example-request", StartedAt: time.Now().UTC()},
+		Method: http.MethodPost,
+		Path:   "/api/schedules/refresh-players",
+	})
+	ctx := webpprof.WithRequest(context.Background(), capture)
+	ctx = webpprof.WithTags(ctx, map[string]string{"scenario": "schedule", "tenant": "umbrella"})
+	request := httptest.NewRequest(http.MethodPost, "/api/schedules/refresh-players", nil).WithContext(ctx)
+	response := httptest.NewRecorder()
+	app.routes().ServeHTTP(response, request)
+	capture.Finish(webpprof.RequestResult{Status: response.Code})
+	if response.Code != http.StatusOK {
+		t.Fatalf("schedule status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	scheduleID := ""
+	for _, entry := range allEntries(t, profilerMux) {
+		if entry.Kind == webpprof.KindSchedule {
+			var schedule webpprof.Schedule
+			if err := json.Unmarshal(entry.Data, &schedule); err != nil {
+				t.Fatalf("decode schedule: %v", err)
+			}
+			if schedule.Name == "players.refresh-snapshot" && schedule.State == "succeeded" {
+				scheduleID = entry.ID
+				if entry.RequestID != "" || entry.ParentID != "" || entry.OriginRequestID != "" {
+					t.Fatalf("schedule must be a standalone root: request=%q parent=%q origin=%q", entry.RequestID, entry.ParentID, entry.OriginRequestID)
+				}
+				if entry.Tags["scenario"] != "schedule" || entry.Tags["tenant"] != "umbrella" {
+					t.Fatalf("schedule tags = %v", entry.Tags)
+				}
+			}
+		}
+	}
+	if scheduleID == "" {
+		t.Fatal("standalone schedule was not recorded")
+	}
+
+	queryParentID := ""
+	logParentID := ""
+	for _, entry := range scopeEntries(t, profilerMux, scheduleID) {
+		switch entry.Kind {
+		case webpprof.KindQuery:
+			var query webpprof.Query
+			if err := json.Unmarshal(entry.Data, &query); err != nil {
+				t.Fatalf("decode scheduled query: %v", err)
+			}
+			if strings.Contains(query.SQL, "FROM players") {
+				queryParentID = entry.ParentID
+			}
+		case webpprof.KindLog:
+			var record webpprof.Log
+			if err := json.Unmarshal(entry.Data, &record); err != nil {
+				t.Fatalf("decode scheduled log: %v", err)
+			}
+			if record.Message == "scheduled player refresh completed" {
+				logParentID = entry.ParentID
+			}
+		}
+	}
+	if queryParentID != scheduleID || logParentID != scheduleID {
+		t.Fatalf("scheduled children: query=%q log=%q schedule=%q", queryParentID, logParentID, scheduleID)
+	}
+	analysis, ok := profiler.AnalyzeSchedule(scheduleID)
+	if !ok || analysis.ScheduleID != scheduleID || analysis.GeneratedAt.IsZero() {
+		t.Fatalf("schedule analysis = %+v, ok=%v", analysis, ok)
+	}
+	for _, entry := range requestEntries(t, profilerMux, "schedule-example-request") {
+		if entry.ID == scheduleID || entry.ParentID == scheduleID {
+			t.Fatalf("schedule execution leaked into request scope: %+v", entry)
+		}
+	}
+}
+
+func TestCallableCreatesStandaloneExecutionWithQueryLogAndAnalysis(t *testing.T) {
+	app, profiler, profilerMux := newTestApplication(t)
+	capture := profiler.BeginRequest(webpprof.Request{
+		Meta:   webpprof.Meta{ID: "callable-example-request", StartedAt: time.Now().UTC()},
+		Method: http.MethodPost,
+		Path:   "/api/callables/rebuild-player-index",
+	})
+	ctx := webpprof.WithRequest(context.Background(), capture)
+	ctx = webpprof.WithTags(ctx, map[string]string{"scenario": "callable", "tenant": "acme"})
+	request := httptest.NewRequest(http.MethodPost, "/api/callables/rebuild-player-index", nil).WithContext(ctx)
+	response := httptest.NewRecorder()
+	app.routes().ServeHTTP(response, request)
+	capture.Finish(webpprof.RequestResult{Status: response.Code})
+	if response.Code != http.StatusOK {
+		t.Fatalf("callable status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	callableID := ""
+	for _, entry := range allEntries(t, profilerMux) {
+		if entry.Kind != webpprof.KindCallable {
+			continue
+		}
+		var callable webpprof.Callable
+		if err := json.Unmarshal(entry.Data, &callable); err != nil {
+			t.Fatalf("decode callable: %v", err)
+		}
+		if callable.Name != "players.rebuild-search-index" || callable.State != "succeeded" {
+			continue
+		}
+		callableID = entry.ID
+		if entry.RequestID != "" || entry.ParentID != "" || entry.OriginRequestID != "" {
+			t.Fatalf("callable must be a standalone root: request=%q parent=%q origin=%q", entry.RequestID, entry.ParentID, entry.OriginRequestID)
+		}
+		if entry.Tags["scenario"] != "callable" || entry.Tags["tenant"] != "acme" {
+			t.Fatalf("callable tags = %v", entry.Tags)
+		}
+	}
+	if callableID == "" {
+		t.Fatal("standalone callable was not recorded")
+	}
+
+	queryFound := false
+	logFound := false
+	for _, entry := range scopeEntries(t, profilerMux, callableID) {
+		if entry.ParentID != callableID {
+			continue
+		}
+		switch entry.Kind {
+		case webpprof.KindQuery:
+			var query webpprof.Query
+			if json.Unmarshal(entry.Data, &query) == nil && strings.Contains(query.SQL, "FROM players") {
+				queryFound = true
+			}
+		case webpprof.KindLog:
+			var record webpprof.Log
+			if json.Unmarshal(entry.Data, &record) == nil && record.Message == "player search index rebuilt" {
+				logFound = true
+			}
+		}
+	}
+	if !queryFound || !logFound {
+		t.Fatalf("callable descendants: query=%t log=%t", queryFound, logFound)
+	}
+	analysis, ok := profiler.AnalyzeCallable(callableID)
+	if !ok || analysis.CallableID != callableID || analysis.GeneratedAt.IsZero() {
+		t.Fatalf("callable analysis = %+v, ok=%v", analysis, ok)
+	}
+	for _, entry := range requestEntries(t, profilerMux, "callable-example-request") {
+		if entry.ID == callableID || entry.ParentID == callableID {
+			t.Fatalf("callable execution leaked into request scope: %+v", entry)
+		}
+	}
+}
+
+func TestReportTaskCreatesStandaloneExecutionWithQueryLogAndAnalysis(t *testing.T) {
+	app, profiler, profilerMux := newTestApplication(t)
+	capture := profiler.BeginRequest(webpprof.Request{Meta: webpprof.Meta{ID: "task-example-request", StartedAt: time.Now().UTC()}, Method: http.MethodPost, Path: "/api/tasks/generate-player-report"})
+	ctx := webpprof.WithRequest(context.Background(), capture)
+	ctx = webpprof.WithTags(ctx, map[string]string{"scenario": "task", "tenant": "umbrella"})
+	response := httptest.NewRecorder()
+	app.routes().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/tasks/generate-player-report", nil).WithContext(ctx))
+	capture.Finish(webpprof.RequestResult{Status: response.Code})
+	if response.Code != http.StatusOK {
+		t.Fatalf("task status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	taskID := ""
+	for _, entry := range allEntries(t, profilerMux) {
+		if entry.Kind != webpprof.KindTask {
+			continue
+		}
+		var task webpprof.Task
+		if json.Unmarshal(entry.Data, &task) == nil && task.Name == "reports.players.generate" {
+			taskID = entry.ID
+			if entry.RequestID != "" || entry.ParentID != "" || entry.Tags["scenario"] != "task" {
+				t.Fatalf("task root = %+v", entry)
+			}
+		}
+	}
+	if taskID == "" {
+		t.Fatal("standalone report task was not recorded")
+	}
+	queryFound, logFound := false, false
+	for _, entry := range scopeEntries(t, profilerMux, taskID) {
+		if entry.ParentID != taskID {
+			continue
+		}
+		queryFound = queryFound || entry.Kind == webpprof.KindQuery
+		logFound = logFound || entry.Kind == webpprof.KindLog
+	}
+	analysis, ok := profiler.AnalyzeTask(taskID)
+	if !queryFound || !logFound || !ok || analysis.TaskID != taskID {
+		t.Fatalf("task execution: query=%t log=%t analysis=%+v ok=%v", queryFound, logFound, analysis, ok)
+	}
+}
+
 func TestDatabaseFailureReturnsSafeError(t *testing.T) {
 	app, _, profilerMux := newTestApplication(t)
 	request := httptest.NewRequest(http.MethodGet, "/api/failure", nil)
@@ -443,12 +639,41 @@ func newTestApplication(t *testing.T) (*application, *webpprof.Profiler, *http.S
 	}
 	t.Cleanup(func() { _ = database.Close() })
 	logger := slog.New(webpprofslog.ProfileWith(profiler, slog.NewJSONHandler(io.Discard, nil)))
+	players := &playerRepository{database: database}
+	refreshPlayers := webpprofschedule.ProfileWith(profiler, "players.refresh-snapshot", func(ctx context.Context) {
+		refreshed, refreshErr := players.list(ctx)
+		if refreshErr != nil {
+			logger.ErrorContext(ctx, "scheduled player refresh failed", "error", refreshErr)
+			return
+		}
+		logger.InfoContext(ctx, "scheduled player refresh completed", "count", len(refreshed))
+	})
+	rebuildPlayerIndex := webpprofcallable.ProfileWith(profiler, "players.rebuild-search-index", func(ctx context.Context) error {
+		indexed, rebuildErr := players.list(ctx)
+		if rebuildErr != nil {
+			logger.ErrorContext(ctx, "player search index rebuild failed", "error", rebuildErr)
+			return rebuildErr
+		}
+		logger.InfoContext(ctx, "player search index rebuilt", "count", len(indexed))
+		return nil
+	})
+	generatePlayerReport := func(ctx context.Context) error {
+		playersForReport, reportErr := players.list(ctx)
+		if reportErr != nil {
+			return reportErr
+		}
+		logger.InfoContext(ctx, "player report generated", "format", "pdf", "rows", len(playersForReport))
+		return nil
+	}
 	app := &application{
-		profiler: profiler,
-		players:  &playerRepository{database: database},
-		logger:   logger,
-		metrics:  &demoMetrics{},
-		manual:   newManualExamples(profiler),
+		profiler:             profiler,
+		players:              players,
+		logger:               logger,
+		metrics:              &demoMetrics{},
+		manual:               newManualExamples(profiler),
+		refreshPlayers:       refreshPlayers,
+		rebuildPlayerIndex:   rebuildPlayerIndex,
+		generatePlayerReport: generatePlayerReport,
 	}
 	return app, profiler, profilerMux
 }
@@ -466,6 +691,23 @@ func requestEntries(t *testing.T, mux *http.ServeMux, requestID string) []webppr
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode events: %v", err)
+	}
+	return payload.Events
+}
+
+func scopeEntries(t *testing.T, mux *http.ServeMux, scopeID string) []webpprof.Entry {
+	t.Helper()
+	response := httptest.NewRecorder()
+	url := "/debug/webpprof/api/events?scope_id=" + scopeID + "&limit=200"
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, url, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("scope events status = %d, want %d", response.Code, http.StatusOK)
+	}
+	var payload struct {
+		Events []webpprof.Entry `json:"events"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode scope events: %v", err)
 	}
 	return payload.Events
 }

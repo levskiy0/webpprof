@@ -32,6 +32,12 @@ func requestTags(next http.Handler) http.Handler {
 			scenario = "diagnostics"
 		} else if r.URL.Path == "/api/manual/custom-profiler" {
 			scenario = "custom-profiler"
+		} else if r.URL.Path == "/api/schedules/refresh-players" {
+			scenario = "schedule"
+		} else if r.URL.Path == "/api/callables/rebuild-player-index" {
+			scenario = "callable"
+		} else if r.URL.Path == "/api/tasks/generate-player-report" {
+			scenario = "task"
 		} else if r.URL.Path == "/api/failure" || r.URL.Path == "/panic" {
 			scenario = "failure"
 		}

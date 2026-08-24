@@ -316,6 +316,25 @@ func (p *Profiler) LogSchedule(schedule Schedule) {
 	p.record(KindSchedule, schedule.Meta, schedule)
 }
 
+// LogCallable records an explicitly invoked custom command and captures a
+// callsite when configured.
+func (p *Profiler) LogCallable(callable Callable) {
+	if p == nil {
+		return
+	}
+	p.prepareCallsite(KindCallable, &callable.Callsite)
+	p.record(KindCallable, callable.Meta, callable)
+}
+
+// LogTask records a measured application task and captures a callsite when configured.
+func (p *Profiler) LogTask(task Task) {
+	if p == nil {
+		return
+	}
+	p.prepareCallsite(KindTask, &task.Callsite)
+	p.record(KindTask, task.Meta, task)
+}
+
 // LogException records an application error or recovered panic.
 func (p *Profiler) LogException(exception Exception) {
 	p.record(KindException, exception.Meta, exception)
@@ -355,6 +374,14 @@ func LogHTTPCall(call HTTPCall) { withDefault(func(p *Profiler) { p.LogHTTPCall(
 func LogSchedule(schedule Schedule) {
 	withDefault(func(p *Profiler) { p.LogSchedule(schedule) })
 }
+
+// LogCallable records an explicitly invoked custom command with the default profiler.
+func LogCallable(callable Callable) {
+	withDefault(func(p *Profiler) { p.LogCallable(callable) })
+}
+
+// LogTask records a measured application task with the default profiler.
+func LogTask(task Task) { withDefault(func(p *Profiler) { p.LogTask(task) }) }
 
 // LogException records an application exception with the default profiler.
 func LogException(exception Exception) {

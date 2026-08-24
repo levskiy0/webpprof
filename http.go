@@ -46,6 +46,9 @@ func (p *Profiler) handler() http.Handler {
 	mux.Handle("GET /api/events", p.authorize(http.HandlerFunc(p.listEvents)))
 	mux.Handle("GET /api/events/{id}", p.authorize(http.HandlerFunc(p.getEvent)))
 	mux.Handle("GET /api/requests/{id}/analysis", p.authorize(http.HandlerFunc(p.getRequestAnalysis)))
+	mux.Handle("GET /api/schedules/{id}/analysis", p.authorize(http.HandlerFunc(p.getScheduleAnalysis)))
+	mux.Handle("GET /api/callables/{id}/analysis", p.authorize(http.HandlerFunc(p.getCallableAnalysis)))
+	mux.Handle("GET /api/tasks/{id}/analysis", p.authorize(http.HandlerFunc(p.getTaskAnalysis)))
 	mux.Handle("GET /api/stats", p.authorize(http.HandlerFunc(p.getStats)))
 	mux.Handle("GET /api/runtime", p.authorize(http.HandlerFunc(p.getRuntimeStats)))
 	mux.Handle("GET /api/queues", p.authorize(http.HandlerFunc(p.getQueueStats)))
@@ -186,6 +189,7 @@ func (p *Profiler) listEvents(w http.ResponseWriter, r *http.Request) {
 	entries, scanned := p.store.listBeforeFiltered(eventFilters{
 		Kind:          Kind(query.Get("kind")),
 		RequestID:     query.Get("request_id"),
+		ScopeID:       query.Get("scope_id"),
 		Tags:          query["tag"],
 		Query:         query.Get("q"),
 		Method:        query.Get("method"),
@@ -224,6 +228,33 @@ func (p *Profiler) getRequestAnalysis(w http.ResponseWriter, r *http.Request) {
 	analysis, ok := p.AnalyzeRequest(r.PathValue("id"))
 	if !ok {
 		writeError(w, http.StatusNotFound, "request not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, analysis)
+}
+
+func (p *Profiler) getScheduleAnalysis(w http.ResponseWriter, r *http.Request) {
+	analysis, ok := p.AnalyzeSchedule(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "schedule not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, analysis)
+}
+
+func (p *Profiler) getCallableAnalysis(w http.ResponseWriter, r *http.Request) {
+	analysis, ok := p.AnalyzeCallable(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "callable not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, analysis)
+}
+
+func (p *Profiler) getTaskAnalysis(w http.ResponseWriter, r *http.Request) {
+	analysis, ok := p.AnalyzeTask(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, analysis)

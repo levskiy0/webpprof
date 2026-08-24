@@ -14,6 +14,7 @@ type fakeProfilerClient struct {
 	stats         webpprof.Stats
 	page          client.EventPage
 	report        client.RequestReport
+	eventReport   client.EventReport
 	waitedRequest client.RequestSummary
 	listOptions   client.ListEventsOptions
 	waitOptions   client.WaitForRequestOptions
@@ -38,6 +39,10 @@ func (*fakeProfilerClient) RequestAnalysis(context.Context, string) (webpprof.Re
 
 func (fake *fakeProfilerClient) InspectRequest(context.Context, string, int) (client.RequestReport, error) {
 	return fake.report, nil
+}
+
+func (fake *fakeProfilerClient) InspectEvent(context.Context, string, int) (client.EventReport, error) {
+	return fake.eventReport, nil
 }
 
 func (fake *fakeProfilerClient) WaitForRequest(_ context.Context, options client.WaitForRequestOptions) (client.RequestSummary, error) {
@@ -121,6 +126,98 @@ func TestServiceInspectRequestOmitsPayloadsByDefault(t *testing.T) {
 	}
 }
 
+func TestServiceInspectsScheduleExecutionScope(t *testing.T) {
+	t.Parallel()
+	schedulePayload, err := json.Marshal(webpprof.Schedule{Name: "players.refresh", State: "succeeded", Payload: map[string]any{"secret": "value"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryPayload, err := json.Marshal(webpprof.Query{SQL: "SELECT * FROM players"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeProfilerClient{eventReport: client.EventReport{
+		Entry: webpprof.Entry{ID: "schedule-1", Kind: webpprof.KindSchedule, Data: schedulePayload},
+		Events: []webpprof.Entry{
+			{ID: "schedule-1", Kind: webpprof.KindSchedule, Data: schedulePayload},
+			{ID: "query-1", Kind: webpprof.KindQuery, ParentID: "schedule-1", Data: queryPayload},
+		},
+		Counts: map[webpprof.Kind]int{webpprof.KindSchedule: 1, webpprof.KindQuery: 1},
+		Findings: []webpprof.Finding{{
+			Code: webpprof.FindingSlowSchedule, Severity: webpprof.FindingSeverityWarning, Title: "Slow schedule",
+		}},
+	}}
+	service, err := New(fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := service.InspectEvent(t.Context(), InspectEventInput{EventID: "schedule-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output.Event.Kind != webpprof.KindSchedule || output.Counts[webpprof.KindQuery] != 1 || len(output.Events) != 2 || output.Events[1].ParentID != "schedule-1" || len(output.Findings) != 1 {
+		t.Fatalf("InspectEvent() = %+v", output)
+	}
+	schedule, ok := output.Event.Detail.(webpprof.Schedule)
+	if !ok || schedule.Payload != nil {
+		t.Fatalf("InspectEvent() schedule detail = %#v", output.Event.Detail)
+	}
+}
+
+func TestServiceInspectsCallableExecutionScope(t *testing.T) {
+	t.Parallel()
+	callablePayload, err := json.Marshal(webpprof.Callable{
+		Name: "players.rebuild-index", State: "failed",
+		Payload: map[string]any{"secret": "input"}, Result: map[string]any{"secret": "output"},
+		Error: "index unavailable",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeProfilerClient{eventReport: client.EventReport{
+		Entry:    webpprof.Entry{ID: "callable-1", Kind: webpprof.KindCallable, Data: callablePayload},
+		Events:   []webpprof.Entry{{ID: "callable-1", Kind: webpprof.KindCallable, Data: callablePayload}},
+		Counts:   map[webpprof.Kind]int{webpprof.KindCallable: 1},
+		Findings: []webpprof.Finding{{Code: webpprof.FindingFailedOperation, Severity: webpprof.FindingSeverityDanger, Title: "Failed callable"}},
+	}}
+	service, err := New(fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := service.InspectEvent(t.Context(), InspectEventInput{EventID: "callable-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	callable, ok := output.Event.Detail.(webpprof.Callable)
+	if !ok || callable.Payload != nil || callable.Result != nil || len(output.Findings) != 1 {
+		t.Fatalf("InspectEvent() callable = %#v, findings = %+v", output.Event.Detail, output.Findings)
+	}
+}
+
+func TestServiceInspectsTaskExecutionScope(t *testing.T) {
+	t.Parallel()
+	payload, err := json.Marshal(webpprof.Task{Name: "reports.generate", State: "succeeded", Fields: map[string]any{"secret": "value"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeProfilerClient{eventReport: client.EventReport{
+		Entry: webpprof.Entry{ID: "task-1", Kind: webpprof.KindTask, Data: payload}, Events: []webpprof.Entry{{ID: "task-1", Kind: webpprof.KindTask, Data: payload}},
+		Counts: map[webpprof.Kind]int{webpprof.KindTask: 1}, Findings: []webpprof.Finding{{Code: webpprof.FindingSlowTask}},
+	}}
+	service, err := New(fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := service.InspectEvent(t.Context(), InspectEventInput{EventID: "task-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, ok := output.Event.Detail.(webpprof.Task)
+	if !ok || task.Fields != nil || len(output.Findings) != 1 {
+		t.Fatalf("task detail = %#v, findings = %+v", output.Event.Detail, output.Findings)
+	}
+}
+
 func TestServiceSearchEventsForwardsServerFilters(t *testing.T) {
 	t.Parallel()
 	fake := &fakeProfilerClient{page: client.EventPage{Events: []webpprof.Entry{{ID: "query-1", Kind: webpprof.KindQuery, DurationNS: int64(25 * time.Millisecond), Data: json.RawMessage(`{"sql":"select needle"}`)}}, Scanned: 7}}
@@ -128,14 +225,14 @@ func TestServiceSearchEventsForwardsServerFilters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	output, err := service.SearchEvents(t.Context(), SearchEventsInput{Query: "needle", Kind: string(webpprof.KindQuery), MinDurationMS: 10, MaxDurationMS: 50, Limit: 1})
+	output, err := service.SearchEvents(t.Context(), SearchEventsInput{Query: "needle", Kind: string(webpprof.KindQuery), ScopeID: "schedule-1", MinDurationMS: 10, MaxDurationMS: 50, Limit: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(output.Events) != 1 || output.Scanned != 7 {
 		t.Fatalf("SearchEvents() = %+v", output)
 	}
-	if fake.listOptions.Query != "needle" || fake.listOptions.Kind != webpprof.KindQuery || fake.listOptions.MinDuration != 10*time.Millisecond || fake.listOptions.MaxDuration != 50*time.Millisecond || fake.listOptions.Limit != 1 {
+	if fake.listOptions.Query != "needle" || fake.listOptions.Kind != webpprof.KindQuery || fake.listOptions.ScopeID != "schedule-1" || fake.listOptions.MinDuration != 10*time.Millisecond || fake.listOptions.MaxDuration != 50*time.Millisecond || fake.listOptions.Limit != 1 {
 		t.Fatalf("ListEvents() options = %+v", fake.listOptions)
 	}
 }

@@ -1,13 +1,14 @@
-const state={events:new Map(),analyses:new Map(),analysisPending:new Set(),sessionMode:"live",kind:"request",selected:"",queryTab:"query",entityTab:"",requestTab:"payload",responseTab:"response",relatedTab:"query",screen:"dashboard",paused:false,pending:[],socket:null,reconnect:0,reconnectTimer:0,socketStableTimer:0,runtime:[],queueStats:{sources:[]},dashboard:{widgets:[]},dashboardHistory:new Map(),stats:{},hasMore:false,loadingMore:false,loadMoreError:"",virtualItems:[],virtualStart:-1,virtualEnd:-1,virtualFrame:0,watchedTags:new Set(),filters:{}};
+const state={events:new Map(),analyses:new Map(),analysisPending:new Set(),scopeLoaded:new Set(),scopePending:new Set(),sessionMode:"live",kind:"request",selected:"",queryTab:"query",entityTab:"",requestTab:"payload",responseTab:"response",relatedTab:"query",screen:"dashboard",paused:false,pending:[],socket:null,reconnect:0,reconnectTimer:0,socketStableTimer:0,runtime:[],queueStats:{sources:[]},dashboard:{widgets:[]},dashboardHistory:new Map(),stats:{},hasMore:false,loadingMore:false,loadMoreError:"",virtualItems:[],virtualStart:-1,virtualEnd:-1,virtualFrame:0,watchedTags:new Set(),filters:{}};
 const pageSize=250;
 const virtualRowHeight=49;
 const listHeadingHeight=38;
 const virtualOverscan=8;
 const virtualPreloadRows=12;
-const kinds=["request","middleware","query","cache","job","email","log","http_call","schedule","exception","event",""];
-const navItems=["dashboard",...kinds];
+const kinds=["schedule","callable","task","request","middleware","query","cache","job","email","log","http_call","exception","event",""];
+const defaultSidebarKinds=kinds.filter(Boolean);
 const methodFilterKinds=new Set(["request","http_call"]);
-const durationFilterKinds=new Set(["request","middleware","query","cache","job","email","http_call","schedule","event",""]);
+const durationFilterKinds=new Set(["request","middleware","query","cache","job","email","http_call","schedule","callable","task","event",""]);
+const executionRootKinds=new Set(["schedule","callable","task"]);
 const filterParamKeys=["method","status","operation","connection","database","result","store","queue","transport","host","level","state","type","kind"];
 const sqlKeywords=new Set("ADD ALL ALTER ANALYZE AND AS ASC BETWEEN BY CASE CHECK COLUMN CONSTRAINT CREATE CROSS CURRENT_DATE CURRENT_TIME CURRENT_TIMESTAMP DATABASE DEFAULT DELETE DESC DISTINCT DROP ELSE END EXISTS EXPLAIN FALSE FOREIGN FROM FULL GROUP HAVING IN INDEX INNER INSERT INTERSECT INTO IS JOIN KEY LEFT LIKE LIMIT NATURAL NOT NULL OFFSET ON OR ORDER OUTER PRIMARY REFERENCES RETURNING RIGHT SELECT SET TABLE THEN TRUE UNION UNIQUE UPDATE USING VALUES WHEN WHERE WITH".split(" "));
 const ids=["login","workspace","login-form","login-error","token","socket-status","event-count","capacity-status","storage-note","import-session","session-file","export-session","pause","clear","tag-watcher","tag-watch-count","tag-watch-clear","tag-watch-search","tag-watch-selected","tag-watch-results-count","tag-watch-options","kinds","search","filter-toggle","filter-count","filter-clear","filters-drawer","filter-summary","entity-filters","time-filter","time-range","time-custom","time-from","time-to","duration-filter","duration","list-heading","events","event-rows","empty","pagination","load-more","pagination-status","detail","dashboard-screen","index-screen","detail-screen","screen-title","back"];
@@ -27,6 +28,8 @@ async function load(){
     state.events.clear();
     state.analyses.clear();
     state.analysisPending.clear();
+    state.scopeLoaded.clear();
+    state.scopePending.clear();
     state.sessionMode="live";
     for(const event of result.events)state.events.set(event.id,event);
     state.stats=result.stats||{};
@@ -166,7 +169,7 @@ function bind(){
       const [group,value]=tab.dataset.cardTab.split(":");
       if(group==="request")state.requestTab=value;
       if(group==="response")state.responseTab=value;
-      if(group==="related")state.relatedTab=value;
+      if(group==="related"||group==="execution")state.relatedTab=value;
       if(group==="query")state.queryTab=value;
       if(group==="entity")state.entityTab=value;
       syncLocation();
@@ -231,6 +234,8 @@ async function importSession(event){
     state.events=imported;
     state.analyses=new Map(Object.entries(snapshot.analyses&&typeof snapshot.analyses==="object"?snapshot.analyses:{}));
     state.analysisPending=new Set();
+    state.scopeLoaded=new Set();
+    state.scopePending=new Set();
     state.sessionMode="imported";
     state.runtime=Array.isArray(snapshot.runtime)?snapshot.runtime:[];
     state.queueStats=snapshot.queue_stats&&typeof snapshot.queue_stats==="object"?snapshot.queue_stats:{sources:[]};
@@ -270,7 +275,11 @@ function fileTimestamp(){
 }
 
 function renderKinds(){
-  if(elements.kinds.children.length!==navItems.length){
+  const configured=Array.isArray(state.stats.sidebar_kinds)?state.stats.sidebar_kinds:defaultSidebarKinds;
+  const sidebarKinds=[...new Set(configured.filter(kind=>kind&&kinds.includes(kind)))];
+  const navItems=["dashboard",...sidebarKinds,""];
+  const rendered=[...elements.kinds.children].map(button=>button.dataset.kind);
+  if(rendered.length!==navItems.length||rendered.some((kind,index)=>kind!==navItems[index])){
     elements.kinds.replaceChildren(...navItems.map(kind=>{
       const button=document.createElement("button");
       const dashboard=kind==="dashboard";
@@ -357,6 +366,8 @@ function connect(){
       state.events.clear();
       state.analyses.clear();
       state.analysisPending.clear();
+      state.scopeLoaded.clear();
+      state.scopePending.clear();
       state.selected="";
       renderTagWatcher();
       renderKinds();
@@ -521,6 +532,8 @@ async function clearEvents(){
   state.events.clear();
   state.analyses.clear();
   state.analysisPending.clear();
+  state.scopeLoaded.clear();
+  state.scopePending.clear();
   state.hasMore=false;
   state.stats={...state.stats,events:0,bytes:0};
   state.selected="";
@@ -829,6 +842,8 @@ function filterDefinitions(kind){
       try{return new URL(data.url||"").host||"unknown";}catch{return"unknown";}
     }},httpStatus],
     schedule:[text("state","State",value=>String(value||"recorded"))],
+    callable:[text("state","State",value=>String(value||"recorded"))],
+    task:[text("state","State",value=>String(value||"recorded"))],
     exception:[text("type","Type",value=>String(value||"Exception"))],
     event:[text("kind","Kind",value=>String(value||"event")),text("status","Status",value=>String(value||"recorded"))]
   };
@@ -1196,14 +1211,16 @@ function formatDateTime(value){
 
 function openDetail(id,historyMode="push"){
   if(!state.events.has(id))return;
-  state.kind=state.events.get(id).kind;
+  const selectedEvent=state.events.get(id);
+  state.kind=selectedEvent.kind;
   state.selected=id;
   state.requestTab="payload";
   state.responseTab="response";
-  state.relatedTab=firstRelatedTab(groupFor(state.events.get(id)));
+  state.relatedTab=executionRootKinds.has(selectedEvent.kind)?firstExecutionTab(executionGroupFor(selectedEvent)):firstRelatedTab(groupFor(selectedEvent));
   state.queryTab="query";
-  state.entityTab=firstEntityTab(state.events.get(id));
+  state.entityTab=firstEntityTab(selectedEvent);
   state.screen="detail";
+  if(executionRootKinds.has(selectedEvent.kind))loadExecutionScope(selectedEvent.id);
   syncLocation(historyMode);
   renderKinds();
   render();
@@ -1239,6 +1256,13 @@ function restoreLocation(){
   const tab=params.get("tab")||"";
   const selectedEvent=state.events.get(entry);
   if(selectedEvent.kind==="query")state.queryTab=["query","callsite","explain","replay"].includes(tab)?tab:"query";
+  else if(executionRootKinds.has(selectedEvent.kind)){
+    const executionTabs=executionDefinitions(executionGroupFor(selectedEvent));
+    const entityTabs=entityTabDefinitions(selectedEvent);
+    state.relatedTab=executionTabs.some(item=>item.key===tab)?tab:firstExecutionTab(executionGroupFor(selectedEvent));
+    state.entityTab=entityTabs.some(item=>item.key===tab)?tab:(entityTabs[0]?.key||"");
+    loadExecutionScope(selectedEvent.id);
+  }
   else if(selectedEvent.kind!=="request"){
     const entityTabs=entityTabDefinitions(selectedEvent);
     state.entityTab=entityTabs.some(item=>item.key===tab)?tab:(entityTabs[0]?.key||"");
@@ -1279,7 +1303,7 @@ function syncLocation(mode="replace"){
   if(state.screen==="detail"&&state.selected){
     url.searchParams.set("entry",state.selected);
     const selectedKind=state.events.get(state.selected)?.kind;
-    const selectedTab=selectedKind==="query"?state.queryTab:selectedKind==="request"?state.relatedTab:state.entityTab;
+    const selectedTab=selectedKind==="query"?state.queryTab:selectedKind==="request"||executionRootKinds.has(selectedKind)?state.relatedTab:state.entityTab;
     if(selectedTab)url.searchParams.set("tab",selectedTab);
     url.searchParams.set("view",state.kind||"all");
   }else{
@@ -1339,6 +1363,8 @@ function listLayout(kind){
     log:{badge:"Level",entry:"Message",status:"",duration:false},
     http_call:{badge:"Method",entry:"URL",status:"Status",duration:true},
     schedule:{badge:"",entry:"Task",status:"State",duration:true},
+    callable:{badge:"",entry:"Command",status:"State",duration:true},
+    task:{badge:"",entry:"Task",status:"State",duration:true},
     exception:{badge:"Type",entry:"Message",status:"",duration:false},
     event:{badge:"",entry:"Event",status:"Status",duration:true}
   };
@@ -1375,7 +1401,7 @@ function badgeToken(value){
 }
 
 function kindSingular(kind){
-  const labels={request:"Request",middleware:"Middleware",query:"Query",cache:"Cache",job:"Job",email:"Mail",log:"Log",http_call:"HTTP",schedule:"Schedule",exception:"Exception",event:"Event"};
+  const labels={request:"Request",middleware:"Middleware",query:"Query",cache:"Cache",job:"Job",email:"Mail",log:"Log",http_call:"HTTP",schedule:"Schedule",callable:"Callable",task:"Task",exception:"Exception",event:"Event"};
   return labels[kind]||kind;
 }
 
@@ -1391,6 +1417,8 @@ function eventPreview(event,kind=state.kind){
   if(kind==="log")content={title:data.message||"Log entry"};
   else if(kind==="http_call")content={title:data.url||"HTTP call"};
   else if(kind==="schedule")content={title:data.name||"Scheduled task"};
+  else if(kind==="callable")content={title:data.name||"Callable command"};
+  else if(kind==="task")content={title:data.name||"Application task"};
   else if(kind==="exception")content={title:data.message||"Exception"};
   else if(kind==="event")content={title:data.name||data.summary||"Event"};
   return entityPreview(content||relationContent(event.kind,event,data),"event-main");
@@ -1422,6 +1450,13 @@ function renderDetail(event){
     elements.detail.innerHTML=`<div class="detail-body telescope-stack">${cacheDetailsCard(event,group.request)}${entityContentCard(event)}</div>`;
     return;
   }
+  if(executionRootKinds.has(event.kind)){
+    const execution=executionGroupFor(event);
+    const executionTabs=executionDefinitions(execution);
+    if(!executionTabs.some(tab=>tab.key===state.relatedTab))state.relatedTab=executionTabs[0].key;
+    elements.detail.innerHTML=`<div class="detail-body telescope-stack">${entityDetailsCard(event,group.request)}${entityContentCard(event)}${executionCard(execution,event,executionTabs)}</div>`;
+    return;
+  }
   if(event.kind!=="request"){
     elements.detail.innerHTML=`<div class="detail-body telescope-stack">${entityDetailsCard(event,group.request)}${entityContentCard(event)}</div>`;
     return;
@@ -1438,13 +1473,16 @@ function renderDetail(event){
     </div>`;
 }
 
-function requestFindingsPanel(group){
-  const request=group.request;
-  if(!request)return'<div class="diagnostic-pending">Request data is unavailable.</div>';
-  const analysis=state.analyses.get(request.id);
-  if(!analysis&&state.sessionMode==="live")loadRequestAnalysis(request.id);
+function analysisFindingsPanel(root){
+  if(!root)return'<div class="diagnostic-pending">Execution data is unavailable.</div>';
+  const analysis=state.analyses.get(root.id);
+  if(!analysis&&state.sessionMode==="live"){
+    if(executionRootKinds.has(root.kind))loadExecutionAnalysis(root);
+    else loadRequestAnalysis(root.id);
+  }
   if(!analysis){
-    const message=state.sessionMode==="imported"?"Analysis was not included in this imported session.":"Analyzing the complete request timeline…";
+    const executionName=root.kind==="callable"?"callable":root.kind==="task"?"task":"schedule";
+    const message=state.sessionMode==="imported"?"Analysis was not included in this imported session.":executionRootKinds.has(root.kind)?`Analyzing the complete ${executionName} execution…`:"Analyzing the complete request timeline…";
     return`<div class="diagnostic-pending">${escapeHTML(message)}</div>`;
   }
   if(analysis.error){
@@ -1459,10 +1497,15 @@ function requestFindingsPanel(group){
     const entryID=typeof finding.entry_id==="string"&&state.events.has(finding.entry_id)?finding.entry_id:"";
     const severity=["info","warning","danger"].includes(finding.severity)?finding.severity:"warning";
     const severityLabel=severityLabels[severity];
-    const supporting=[finding.detail,finding.suggestion].filter(Boolean).join(" · ");
-    return`<button type="button" class="diagnostic-row ${severity}" aria-label="${escapeHTML(severityLabel)}: ${escapeHTML(finding.title||"Finding")}"${entryID?` data-event-id="${escapeHTML(entryID)}"`:""}><span class="diagnostic-mark" aria-hidden="true">${severityMarks[severity]}</span><span class="diagnostic-copy"><strong>${escapeHTML(finding.title||"Finding")}</strong>${supporting?`<small>${escapeHTML(supporting)}</small>`:""}</span><span class="diagnostic-severity">${severityLabel}</span>${entryID?rowAction():'<span class="diagnostic-action-placeholder" aria-hidden="true"></span>'}</button>`;
+    const detail=finding.detail?`<small class="diagnostic-detail">${escapeHTML(finding.detail)}</small>`:"";
+    const suggestion=finding.suggestion?`<small class="diagnostic-suggestion">${escapeHTML(finding.suggestion)}</small>`:"";
+    return`<button type="button" class="diagnostic-row ${severity}" aria-label="${escapeHTML(severityLabel)}: ${escapeHTML(finding.title||"Finding")}"${entryID?` data-event-id="${escapeHTML(entryID)}"`:""}><span class="diagnostic-mark" aria-hidden="true">${severityMarks[severity]}</span><span class="diagnostic-copy"><strong>${escapeHTML(finding.title||"Finding")}</strong>${detail}${suggestion}</span><span class="diagnostic-severity">${severityLabel}</span>${entryID?rowAction():'<span class="diagnostic-action-placeholder" aria-hidden="true"></span>'}</button>`;
   }).join(""):'<div class="diagnostic-healthy"><span aria-hidden="true">✓</span><strong>No automatic findings</strong><small>The recorded request timeline passed the current diagnostic rules.</small></div>';
   return`<div class="diagnostic-list">${content}</div>`;
+}
+
+function requestFindingsPanel(group){
+  return analysisFindingsPanel(group.request);
 }
 
 function loadRequestAnalysis(requestID){
@@ -1478,9 +1521,47 @@ function loadRequestAnalysis(requestID){
   });
 }
 
+function loadExecutionAnalysis(root){
+  if(!root||!executionRootKinds.has(root.kind)||state.sessionMode!=="live"||state.analyses.has(root.id)||state.analysisPending.has(root.id))return;
+  state.analysisPending.add(root.id);
+  const collection={schedule:"schedules",callable:"callables",task:"tasks"}[root.kind];
+  api(`/api/${collection}/${encodeURIComponent(root.id)}/analysis`).then(analysis=>{
+    state.analyses.set(root.id,analysis);
+  }).catch(error=>{
+    state.analyses.set(root.id,{error:`Could not analyze ${root.kind}: ${error.message}`});
+  }).finally(()=>{
+    state.analysisPending.delete(root.id);
+    if(state.screen==="detail"&&state.selected===root.id)renderDetail(state.events.get(root.id));
+  });
+}
+
 function invalidateRequestAnalysis(event){
   const requestID=event.kind==="request"?event.id:event.request_id||event.origin_request_id;
   if(requestID)state.analyses.delete(requestID);
+  let current=event;
+  const visited=new Set();
+  while(current&&!visited.has(current.id)){
+    visited.add(current.id);
+    if(executionRootKinds.has(current.kind)){
+      state.analyses.delete(current.id);
+      break;
+    }
+    current=current.parent_id?state.events.get(current.parent_id):null;
+  }
+}
+
+function loadExecutionScope(rootID){
+  if(!rootID||state.sessionMode!=="live"||state.scopeLoaded.has(rootID)||state.scopePending.has(rootID))return;
+  state.scopePending.add(rootID);
+  api(`/api/events?scope_id=${encodeURIComponent(rootID)}&limit=1000`).then(page=>{
+    for(const event of page.events||[])state.events.set(event.id,event);
+    state.scopeLoaded.add(rootID);
+    renderTagWatcher();
+    renderKinds();
+  }).catch(()=>{}).finally(()=>{
+    state.scopePending.delete(rootID);
+    if(state.screen==="detail"&&state.selected===rootID)renderDetail(state.events.get(rootID));
+  });
 }
 
 function groupFor(event){
@@ -1495,6 +1576,36 @@ function groupFor(event){
   return{request:events.find(item=>item.kind==="request")||null,events,byKind};
 }
 
+function executionGroupFor(root){
+  const available=visibleEvents();
+  const byID=new Map(available.map(event=>[event.id,event]));
+  if(!byID.has(root.id))byID.set(root.id,root);
+  const children=new Map();
+  for(const event of byID.values()){
+    if(!event.parent_id||event.parent_id===event.id)continue;
+    if(!children.has(event.parent_id))children.set(event.parent_id,[]);
+    children.get(event.parent_id).push(event.id);
+  }
+  const ids=new Set([root.id]);
+  const stack=[root.id];
+  while(stack.length){
+    const parentID=stack.pop();
+    for(const childID of children.get(parentID)||[]){
+      if(ids.has(childID))continue;
+      ids.add(childID);
+      stack.push(childID);
+    }
+  }
+  const events=[...ids].map(id=>byID.get(id)).filter(Boolean).sort((left,right)=>(Date.parse(left.started_at)||0)-(Date.parse(right.started_at)||0)||(left.cursor||0)-(right.cursor||0));
+  const byKind=new Map();
+  for(const event of events){
+    if(event.id===root.id)continue;
+    if(!byKind.has(event.kind))byKind.set(event.kind,[]);
+    byKind.get(event.kind).push(event);
+  }
+  return{root,events,byKind};
+}
+
 function relatedDefinitions(group){
   const definitions=[
     ["middleware","Middleware","middleware"],
@@ -1505,6 +1616,8 @@ function relatedDefinitions(group){
     ["email","Mail","email"],
     ["http_call","HTTP Client","http_call"],
     ["schedule","Schedules","schedule"],
+    ["callable","Callables","callable"],
+    ["task","Tasks","task"],
     ["exception","Exceptions","exception"],
     ["event","Events","event"]
   ];
@@ -1519,6 +1632,34 @@ function relatedDefinitions(group){
 
 function firstRelatedTab(group){
   return relatedDefinitions(group)[0].key;
+}
+
+function executionDefinitions(group){
+  const definitions=[
+    ["middleware","Middleware","middleware"],
+    ["query","Queries","query"],
+    ["cache","Cache","cache"],
+    ["log","Logs","log"],
+    ["job","Jobs","job"],
+    ["email","Mail","email"],
+    ["http_call","HTTP Client","http_call"],
+    ["schedule","Schedules","schedule"],
+    ["callable","Callables","callable"],
+    ["task","Tasks","task"],
+    ["exception","Exceptions","exception"],
+    ["event","Events","event"]
+  ];
+  const tabs=definitions.filter(([, ,kind])=>(group.byKind.get(kind)||[]).length).map(([key,label,kind])=>({key,label,count:(group.byKind.get(kind)||[]).length}));
+  const analysis=state.analyses.get(group.root.id);
+  const findings=Array.isArray(analysis?.findings)?analysis.findings:[];
+  const findingBadge=analysis?.error?"!":analysis?findings.length:"…";
+  tabs.unshift({key:"findings",label:"Findings",badge:findingBadge});
+  tabs.push({key:"timeline",label:"Timeline",count:group.events.length},{key:"raw",label:"Raw"});
+  return tabs;
+}
+
+function firstExecutionTab(group){
+  return executionDefinitions(group)[0].key;
 }
 
 function requestDetailsCard(request){
@@ -1612,6 +1753,15 @@ function entityTabDefinitions(event){
     add("payload","Payload",entityValuePanel(data.payload,"No schedule payload was captured."));
     if(data.panic||data.error)add(data.panic?"panic":"error",data.panic?"Panic":"Error",entityValuePanel(data.panic||data.error,"No failure details were captured.",false));
   }
+  if(event.kind==="callable"){
+    add("payload","Payload",entityValuePanel(data.payload,"No callable payload was captured."));
+    add("result","Result",entityValuePanel(data.result,"No callable result was captured."));
+    if(data.panic||data.error)add(data.panic?"panic":"error",data.panic?"Panic":"Error",entityValuePanel(data.panic||data.error,"No failure details were captured.",false));
+  }
+  if(event.kind==="task"){
+    add("fields","Fields",entityValuePanel(data.fields,"No task fields were captured."));
+    if(data.panic||data.error)add(data.panic?"panic":"error",data.panic?"Panic":"Error",entityValuePanel(data.panic||data.error,"No failure details were captured.",false));
+  }
   if(event.kind==="exception")add("stack","Stack",entityValuePanel(data.stack,"No stack was captured.",false));
   if(event.kind==="event")add("fields","Fields",entityValuePanel(data.fields,"No event fields were captured."));
   if(Array.isArray(data.callsite)&&data.callsite.length)add("callsite","Callsite",queryCallsitePanel(event));
@@ -1629,7 +1779,16 @@ function entityContentCard(event){
 function queryPlanPanel(query){
   const plan=query.data?.plan;
   const panel=plan?.text?codePanel(plan.text,false,"No plan rows were returned."):'<div class="panel-empty">No EXPLAIN plan is stored for this query. Enable <code>Config{Explain: true}</code> before recording it; existing entries are not backfilled.</div>';
-  return`${panel}${plan?.error?`<div class="danger-block">${escapeHTML(plan.error)}</div>`:""}`;
+  const issues=Array.isArray(plan?.issues)?plan.issues:[];
+  const issuePanel=issues.length?`<div class="plan-issues"><strong>Plan signals</strong><ul>${issues.map(issue=>`<li>${escapeHTML(queryPlanIssueText(issue))}</li>`).join("")}</ul></div>`:"";
+  return`${issuePanel}${panel}${plan?.error?`<div class="danger-block">${escapeHTML(plan.error)}</div>`:""}`;
+}
+
+function queryPlanIssueText(issue){
+  if(issue?.code==="full_scan")return issue.relation?`Full scan on ${issue.relation}`:"Full table scan";
+  if(issue?.code==="temporary_sort")return"Temporary sort or table";
+  if(issue?.code==="large_estimate")return`Large estimate (${Number(issue.estimated_rows||0).toLocaleString()} rows)`;
+  return String(issue?.code||"Plan issue").replaceAll("_"," ");
 }
 
 function queryCopyButton(kind){
@@ -1702,7 +1861,7 @@ function requestLink(request){
 }
 
 function detailTitle(kind){
-  return{middleware:"Middleware Details",job:"Job Details",email:"Mail Details",log:"Log Details",http_call:"HTTP Client Details",schedule:"Schedule Details",exception:"Exception Details",event:"Event Details"}[kind]||`${kindLabel(kind)} Details`;
+  return{middleware:"Middleware Details",job:"Job Details",email:"Mail Details",log:"Log Details",http_call:"HTTP Client Details",schedule:"Schedule Details",callable:"Callable Details",task:"Task Details",exception:"Exception Details",event:"Event Details"}[kind]||`${kindLabel(kind)} Details`;
 }
 
 function entityDetailsCard(event,request){
@@ -1715,6 +1874,8 @@ function entityDetailsCard(event,request){
   if(event.kind==="log")facts.push(["Level",`<span class="state ${status.className}">${escapeHTML((data.level||"log").toUpperCase())}</span>`,true],["Message",data.message||"—"]);
   if(event.kind==="http_call")facts.push(["Method",`<span class="method method-${escapeHTML((data.method||"http").toLowerCase())}">${escapeHTML(data.method||"HTTP")}</span>`,true],["URL",data.url||"—"],["Status",`<span class="state ${status.className}">${escapeHTML(status.label)}</span>`,true],["Response size",bytes(data.response_size||0)]);
   if(event.kind==="schedule")facts.push(["Task",data.name||"—"],["State",`<span class="state ${status.className}">${escapeHTML(data.state||status.label)}</span>`,true],["Planned at",formatDateTime(data.planned_at)]);
+  if(event.kind==="callable")facts.push(["Command",data.name||"—"],["State",`<span class="state ${status.className}">${escapeHTML(data.state||status.label)}</span>`,true]);
+  if(event.kind==="task")facts.push(["Task",data.name||"—"],["State",`<span class="state ${status.className}">${escapeHTML(data.state||status.label)}</span>`,true]);
   if(event.kind==="exception")facts.push(["Type",data.type||"Exception"],["Message",data.message||"—"],["Status",`<span class="state error">Error</span>`,true]);
   if(event.kind==="event")facts.push(["Kind",data.kind||"event"],["Name",data.name||"—"],["Status",`<span class="state ${status.className}">${escapeHTML(data.status||status.label)}</span>`,true],["Summary",data.summary||"—"]);
   facts.push(["Duration",duration(event.duration_ns)]);
@@ -1765,6 +1926,15 @@ function relatedCard(group,event,tabs){
   else if(state.relatedTab==="raw")panel=rawBlock(event.data);
   else panel=relatedCollection(state.relatedTab,group.byKind.get(state.relatedTab)||[]);
   return tabbedCard("Related",tabs,state.relatedTab,panel);
+}
+
+function executionCard(group,event,tabs){
+  let panel;
+  if(state.relatedTab==="findings")panel=analysisFindingsPanel(group.root);
+  else if(state.relatedTab==="timeline")panel=timeline(group.events,group.root);
+  else if(state.relatedTab==="raw")panel=rawBlock(event.data);
+  else panel=relatedCollection(state.relatedTab,group.byKind.get(state.relatedTab)||[]);
+  return tabbedCard("Execution",tabs,state.relatedTab,panel);
 }
 
 function cardTabs(group,tabs,active,action=""){
@@ -1949,6 +2119,8 @@ function relationContent(kind,event,data){
   if(kind==="email")return{title:data.subject||"Email"};
   if(kind==="http_call")return{title:`${data.method||"HTTP"} ${data.url||""}`};
   if(kind==="schedule")return{title:data.name||"Scheduled task"};
+  if(kind==="callable")return{title:data.name||"Callable command"};
+  if(kind==="task")return{title:data.name||"Application task"};
   if(kind==="exception")return{title:data.message||"Exception"};
   return{title:data.name||data.summary||kindLabel(kind)};
 }
@@ -1958,9 +2130,9 @@ function compactQuery(sql){
   return value.length>150?`${value.slice(0,147)}…`:value||"SQL query";
 }
 
-function timeline(events){
+function timeline(events,executionRoot=null){
   if(!events.length)return'<div class="detail-empty compact"><strong>No timeline events</strong></div>';
-  const request=events.find(event=>event.kind==="request")||events[0];
+  const request=executionRoot||events.find(event=>event.kind==="request")||events[0];
   const starts=events.map(event=>Date.parse(event.started_at)).filter(Number.isFinite);
   const requestStart=Date.parse(request.started_at);
   const first=Number.isFinite(requestStart)?requestStart:starts.length?Math.min(...starts):Date.now();
@@ -1983,7 +2155,9 @@ function timeline(events){
     return`<button type="button" class="gantt-row depth-${Math.min(depth,6)}${isFailure(event)?" failed":""}${criticalClass}${bottleneckClass}" data-event-id="${escapeHTML(event.id)}"><span class="gantt-operation">${timelineTreeConnector(depth,isLast,ancestorContinuations,hasChildren)}<span class="gantt-kind" data-kind="${escapeHTML(event.kind)}">${escapeHTML(timelineKindLabel(event.kind))}</span><strong title="${escapeHTML(operation)}">${escapeHTML(operation)}</strong>${critical.bottleneck?.id===event.id?'<em>Bottleneck</em>':""}</span><span class="gantt-track"><svg viewBox="0 0 1000 20" preserveAspectRatio="none" role="img" aria-label="Starts at ${escapeHTML(formatMilliseconds(offset))}, lasts ${escapeHTML(durationLabel)}"><rect class="gantt-bar" data-kind="${escapeHTML(event.kind)}" x="${x.toFixed(2)}" y="3" width="${width.toFixed(2)}" height="14" rx="3"/></svg></span><b>${escapeHTML(durationLabel)}</b>${rowAction()}</button>`;
   }).join("");
   const bottleneck=critical.bottleneck;
-  const summary=`<div class="gantt-summary"><div class="gantt-stat"><span>Request window</span><strong>${escapeHTML(formatMilliseconds(windowMS))}</strong></div><div class="gantt-stat"><span>Critical path</span><strong>${escapeHTML(formatMilliseconds(critical.duration))}</strong></div><div class="gantt-stat bottleneck"><span>Bottleneck</span><strong>${escapeHTML(bottleneck?title(bottleneck):"None")}</strong></div></div>`;
+  const windowLabel=request.kind==="request"?"Request window":"Execution window";
+  const bottleneckKind=bottleneck?.kind||"";
+  const summary=`<div class="gantt-summary"><div class="gantt-stat"><span>${windowLabel}</span><strong>${escapeHTML(formatMilliseconds(windowMS))}</strong></div><div class="gantt-stat"><span>Critical path</span><strong>${escapeHTML(formatMilliseconds(critical.duration))}</strong></div><div class="gantt-stat bottleneck" data-kind="${escapeHTML(bottleneckKind)}"><span>Bottleneck</span><strong>${escapeHTML(bottleneck?title(bottleneck):"None")}</strong></div></div>`;
   return`<div class="gantt">${summary}${timelineBreakdown(events)}<div class="gantt-table"><div class="gantt-heading"><span>Operation</span>${timelineAxis(windowMS)}<span>Duration</span><span></span></div>${rows}</div></div>`;
 }
 
@@ -2026,7 +2200,11 @@ function timelineTreeConnector(depth,isLast,ancestorContinuations,hasChildren){
 }
 
 function timelineCriticalPath(events,first,last){
-  const blockingKinds=new Set(["middleware","query","cache","http_call"]);
+  // Custom Events represent measured application work just like dependency
+  // calls. Execution roots are intentionally excluded: choosing the root on
+  // every timeline would only restate its total duration, not identify the
+  // child operation responsible for it.
+  const blockingKinds=new Set(["middleware","query","cache","http_call","event"]);
   const operations=events.filter(event=>blockingKinds.has(event.kind)&&eventDuration(event)>0).map(event=>{
     const start=Math.max(first,Date.parse(event.started_at)||first);
     const end=Math.min(last,start+eventDuration(event)/1e6);
@@ -2086,7 +2264,7 @@ function timelineAxis(windowMS){
 }
 
 function timelineKindLabel(kind){
-  const labels={request:"Request",middleware:"Middleware",query:"SQL",cache:"Cache",http_call:"HTTP",job:"Job",email:"Mail",log:"Log",schedule:"Schedule",exception:"Exception",event:"Event"};
+  const labels={request:"Request",middleware:"Middleware",query:"SQL",cache:"Cache",http_call:"HTTP",job:"Job",email:"Mail",log:"Log",schedule:"Schedule",callable:"Callable",task:"Task",exception:"Exception",event:"Event"};
   return labels[kind]||kindSingular(kind);
 }
 
@@ -2195,12 +2373,12 @@ function kindCount(kind){
 }
 
 function navIcon(kind){
-  const paths={dashboard:'<path d="M4 13h6v7H4zM14 4h6v16h-6zM4 4h6v5H4z"/>',request:'<path d="M4 5h16v14H4zM8 9h8M8 13h5"/>',middleware:'<path d="M5 4h14v5H5zM5 15h14v5H5zM8 9v6M16 9v6"/>',query:'<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/>',cache:'<path d="M5 8h14v11H5zM8 5h8v3M9 12h6M9 15h4"/>',job:'<path d="M4 7h16v12H4zM9 7V4h6v3M4 11h16M10 11v2h4v-2"/>',email:'<path d="M3 6h18v13H3zM3 7l9 7 9-7"/>',log:'<path d="M6 3h9l4 4v14H6zM15 3v5h4M9 12h6M9 16h6"/>',http_call:'<path d="M8 12h8M13 8l4 4-4 4M5 5h14v14H5"/>',schedule:'<circle cx="12" cy="13" r="8"/><path d="M12 9v5l3 2M9 3h6"/>',exception:'<path d="M12 3l10 18H2zM12 9v5M12 18h.01"/>',event:'<path d="M12 3l2.2 5.8L20 11l-5.8 2.2L12 19l-2.2-5.8L4 11l5.8-2.2z"/>','':'<path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/>'};
+  const paths={dashboard:'<path d="M4 13h6v7H4zM14 4h6v16h-6zM4 4h6v5H4z"/>',request:'<path d="M4 5h16v14H4zM8 9h8M8 13h5"/>',middleware:'<path d="M5 4h14v5H5zM5 15h14v5H5zM8 9v6M16 9v6"/>',query:'<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/>',cache:'<path d="M5 8h14v11H5zM8 5h8v3M9 12h6M9 15h4"/>',job:'<path d="M4 7h16v12H4zM9 7V4h6v3M4 11h16M10 11v2h4v-2"/>',email:'<path d="M3 6h18v13H3zM3 7l9 7 9-7"/>',log:'<path d="M6 3h9l4 4v14H6zM15 3v5h4M9 12h6M9 16h6"/>',http_call:'<path d="M8 12h8M13 8l4 4-4 4M5 5h14v14H5"/>',schedule:'<circle cx="12" cy="13" r="8"/><path d="M12 9v5l3 2M9 3h6"/>',callable:'<path d="M8 5 3 12l5 7M16 5l5 7-5 7M14 3l-4 18"/>',task:'<path d="M5 5h14v14H5zM9 9h6M9 13h6M9 17h4"/>',exception:'<path d="M12 3l10 18H2zM12 9v5M12 18h.01"/>',event:'<path d="M12 3l2.2 5.8L20 11l-5.8 2.2L12 19l-2.2-5.8L4 11l5.8-2.2z"/>','':'<path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/>'};
   return`<svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">${paths[kind]||paths[""]}</svg>`;
 }
 
 function kindLabel(kind){
-  const labels={dashboard:"Dashboard",request:"Requests",middleware:"Middleware",query:"Queries",cache:"Cache",job:"Jobs",email:"Mail",log:"Logs",http_call:"HTTP calls",schedule:"Schedules",exception:"Exceptions",event:"Events","":"All events"};
+  const labels={dashboard:"Dashboard",request:"Requests",middleware:"Middleware",query:"Queries",cache:"Cache",job:"Jobs",email:"Mail",log:"Logs",http_call:"HTTP calls",schedule:"Schedules",callable:"Callables",task:"Tasks",exception:"Exceptions",event:"Events","":"All events"};
   return labels[kind]||kind;
 }
 
@@ -2220,6 +2398,8 @@ function title(event){
   if(event.kind==="log")return data.message||"log";
   if(event.kind==="http_call")return`${data.method||"HTTP"} ${data.url||""}`;
   if(event.kind==="schedule")return data.name||"schedule";
+  if(event.kind==="callable")return data.name||"callable";
+  if(event.kind==="task")return data.name||"task";
   if(event.kind==="exception")return data.message||"exception";
   return data.name||data.summary||event.kind;
 }

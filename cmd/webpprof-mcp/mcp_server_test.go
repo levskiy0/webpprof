@@ -26,6 +26,9 @@ func (profilerClientStub) RequestAnalysis(context.Context, string) (webpprof.Req
 func (profilerClientStub) InspectRequest(context.Context, string, int) (client.RequestReport, error) {
 	return client.RequestReport{}, nil
 }
+func (profilerClientStub) InspectEvent(context.Context, string, int) (client.EventReport, error) {
+	return client.EventReport{}, nil
+}
 func (profilerClientStub) WaitForRequest(context.Context, client.WaitForRequestOptions) (client.RequestSummary, error) {
 	return client.RequestSummary{}, nil
 }
@@ -54,7 +57,7 @@ func TestNewServerExposesReadOnlyTools(t *testing.T) {
 		}
 		tools[tool.Name] = tool
 	}
-	for _, name := range []string{"webpprof_status", "webpprof_list_requests", "webpprof_inspect_request", "webpprof_search_events", "webpprof_wait_for_request"} {
+	for _, name := range []string{"webpprof_status", "webpprof_list_requests", "webpprof_inspect_request", "webpprof_inspect_event", "webpprof_search_events", "webpprof_wait_for_request"} {
 		tool := tools[name]
 		if tool == nil || tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
 			t.Errorf("tool %q is absent or not read-only", name)

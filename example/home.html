@@ -32,13 +32,16 @@
 <body>
   <main>
     <h1>webpprof realistic example</h1>
-    <p>This is an ordinary <code>net/http</code> application backed by <code>database/sql</code>, pure-Go SQLite, and <code>log/slog</code>. Their three boundaries are wrapped once in <code>main.go</code>; handlers use the optional <code>Measure</code> helper for named service spans.</p>
+    <p>This is an ordinary <code>net/http</code> application backed by <code>database/sql</code>, pure-Go SQLite, and <code>log/slog</code>, with one scheduled callback and one custom callable command. Their boundaries are wrapped once in <code>main.go</code>; handlers use the optional <code>Measure</code> helper for named service spans.</p>
     <h2>Automatic after integration</h2>
     <p>Use these real application routes. Request, middleware, SQL, EXPLAIN, callsite, tags, and slog entities are captured automatically and nested under the measured handler Event.</p>
     <nav>
       <button class="primary" type="button" data-request="/api/players/42?tenant=acme" data-method="GET">Load Ada</button>
       <button type="button" data-request="/api/players?tenant=umbrella" data-method="GET">List players</button>
       <button type="button" data-request="/api/players/42/views?tenant=acme" data-method="POST">Increment views</button>
+      <button type="button" data-request="/api/schedules/refresh-players?tenant=umbrella" data-method="POST">Run scheduled refresh</button>
+      <button type="button" data-request="/api/callables/rebuild-player-index?tenant=acme" data-method="POST">Run custom callable</button>
+      <button type="button" data-request="/api/tasks/generate-player-report?tenant=umbrella" data-method="POST">Generate player report task</button>
       <button type="button" data-request="/api/failure?tenant=acme" data-method="GET">Real SQL failure</button>
       <button type="button" data-request="/panic?tenant=umbrella" data-method="GET">Panic</button>
       <a href="/debug/webpprof/" target="_blank" rel="noreferrer">Open webpprof ↗</a>

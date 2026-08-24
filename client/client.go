@@ -158,6 +158,9 @@ func (c *Client) ListEvents(ctx context.Context, options ListEventsOptions) (Eve
 	if options.RequestID != "" {
 		query.Set("request_id", options.RequestID)
 	}
+	if options.ScopeID != "" {
+		query.Set("scope_id", options.ScopeID)
+	}
 	for _, tag := range options.Tags {
 		if strings.TrimSpace(tag) != "" {
 			query.Add("tag", tag)
@@ -228,6 +231,45 @@ func (c *Client) RequestAnalysis(ctx context.Context, requestID string) (webppro
 	return analysis, nil
 }
 
+// ScheduleAnalysis returns the automatic findings for a captured Schedule execution.
+func (c *Client) ScheduleAnalysis(ctx context.Context, scheduleID string) (webpprof.ScheduleAnalysis, error) {
+	if strings.TrimSpace(scheduleID) == "" {
+		return webpprof.ScheduleAnalysis{}, errors.New("webpprof client: schedule ID is required")
+	}
+	var analysis webpprof.ScheduleAnalysis
+	endpoint := "api/schedules/" + url.PathEscape(scheduleID) + "/analysis"
+	if err := c.getJSON(ctx, endpoint, nil, &analysis); err != nil {
+		return webpprof.ScheduleAnalysis{}, fmt.Errorf("webpprof client: analyze schedule: %w", err)
+	}
+	return analysis, nil
+}
+
+// CallableAnalysis returns the automatic findings for a captured Callable execution.
+func (c *Client) CallableAnalysis(ctx context.Context, callableID string) (webpprof.CallableAnalysis, error) {
+	if strings.TrimSpace(callableID) == "" {
+		return webpprof.CallableAnalysis{}, errors.New("webpprof client: callable ID is required")
+	}
+	var analysis webpprof.CallableAnalysis
+	endpoint := "api/callables/" + url.PathEscape(callableID) + "/analysis"
+	if err := c.getJSON(ctx, endpoint, nil, &analysis); err != nil {
+		return webpprof.CallableAnalysis{}, fmt.Errorf("webpprof client: analyze callable: %w", err)
+	}
+	return analysis, nil
+}
+
+// TaskAnalysis returns the automatic findings for a captured Task execution.
+func (c *Client) TaskAnalysis(ctx context.Context, taskID string) (webpprof.TaskAnalysis, error) {
+	if strings.TrimSpace(taskID) == "" {
+		return webpprof.TaskAnalysis{}, errors.New("webpprof client: task ID is required")
+	}
+	var analysis webpprof.TaskAnalysis
+	endpoint := "api/tasks/" + url.PathEscape(taskID) + "/analysis"
+	if err := c.getJSON(ctx, endpoint, nil, &analysis); err != nil {
+		return webpprof.TaskAnalysis{}, fmt.Errorf("webpprof client: analyze task: %w", err)
+	}
+	return analysis, nil
+}
+
 // InspectRequest combines the request entry, its correlated events, and the
 // profiler's automatic findings in one response suited to diagnostic tools.
 func (c *Client) InspectRequest(ctx context.Context, requestID string, limit int) (RequestReport, error) {
@@ -260,6 +302,46 @@ func (c *Client) InspectRequest(ctx context.Context, requestID string, limit int
 		HasMore:  page.HasMore,
 		Analysis: analysis,
 	}, nil
+}
+
+// InspectEvent combines one execution root with every bounded descendant
+// connected through ParentID. It is intended for standalone schedules, jobs,
+// and other non-request execution roots.
+func (c *Client) InspectEvent(ctx context.Context, eventID string, limit int) (EventReport, error) {
+	entry, err := c.Event(ctx, eventID)
+	if err != nil {
+		return EventReport{}, err
+	}
+	page, err := c.ListEvents(ctx, ListEventsOptions{ScopeID: eventID, Limit: limit})
+	if err != nil {
+		return EventReport{}, err
+	}
+	counts := make(map[webpprof.Kind]int)
+	for _, scopedEntry := range page.Events {
+		counts[scopedEntry.Kind]++
+	}
+	report := EventReport{Entry: entry, Events: page.Events, Counts: counts, HasMore: page.HasMore}
+	switch entry.Kind {
+	case webpprof.KindSchedule:
+		analysis, err := c.ScheduleAnalysis(ctx, eventID)
+		if err != nil {
+			return EventReport{}, err
+		}
+		report.Findings = analysis.Findings
+	case webpprof.KindCallable:
+		analysis, err := c.CallableAnalysis(ctx, eventID)
+		if err != nil {
+			return EventReport{}, err
+		}
+		report.Findings = analysis.Findings
+	case webpprof.KindTask:
+		analysis, err := c.TaskAnalysis(ctx, eventID)
+		if err != nil {
+			return EventReport{}, err
+		}
+		report.Findings = analysis.Findings
+	}
+	return report, nil
 }
 
 // WaitForRequest polls until a captured request matches the supplied filters

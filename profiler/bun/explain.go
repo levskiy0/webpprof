@@ -1,15 +1,15 @@
-package sql
+package bun
 
 import (
 	"context"
-	"database/sql/driver"
+	"database/sql"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/levskiy0/webpprof"
+	"github.com/uptrace/bun"
 )
 
 const (
@@ -18,40 +18,46 @@ const (
 	defaultExplainMaxBytes = 64 << 10
 )
 
-func (c *sqlConnProfiler) explain(ctx context.Context, query string, args []driver.NamedValue) *webpprof.QueryPlan {
-	if !c.config.Explain || !explainableSQL(query) {
+func (h *bunQueryProfiler) explain(ctx context.Context, event *bun.QueryEvent) *webpprof.QueryPlan {
+	if !h.config.Explain || event == nil || event.DB == nil || !explainableSQL(event.QueryTemplate) {
 		return nil
 	}
-	command, err := explainCommand(c.config.Driver, query)
-	plan := &webpprof.QueryPlan{Command: compactSQL(command), Format: "text"}
+	displayCommand, err := explainCommand(h.config.Driver, event.QueryTemplate)
+	plan := &webpprof.QueryPlan{Command: compactSQL(displayCommand), Format: "text"}
 	if err != nil {
 		plan.Error = err.Error()
 		return plan
 	}
-	timeout := c.config.ExplainTimeout
+	executionCommand, err := explainCommand(h.config.Driver, event.Query)
+	if err != nil {
+		plan.Error = err.Error()
+		return plan
+	}
+	timeout := h.config.ExplainTimeout
 	if timeout <= 0 {
 		timeout = defaultExplainTimeout
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	startedAt := time.Now()
-	rows, err := queryDriver(ctx, c.inner, command, args)
+	// Use the underlying sql.DB so the plan lookup does not trigger Bun hooks or
+	// create a second profiler event. Bun has already formatted Query safely.
+	rows, err := event.DB.DB.QueryContext(ctx, executionCommand)
 	plan.Duration = time.Since(startedAt)
 	if err != nil {
 		plan.Error = err.Error()
 		return plan
 	}
 	defer rows.Close()
-	maxRows := c.config.ExplainMaxRows
+	maxRows := h.config.ExplainMaxRows
 	if maxRows <= 0 {
 		maxRows = defaultExplainMaxRows
 	}
-	plan.Text, err = readPlan(rows, maxRows, defaultExplainMaxBytes)
+	plan.Text, err = readSQLPlan(rows, maxRows, defaultExplainMaxBytes)
 	if err != nil {
 		plan.Error = err.Error()
 		return plan
 	}
-	plan.Issues = webpprof.DetectQueryPlanIssues(c.config.Driver, plan.Text)
 	return plan
 }
 
@@ -59,7 +65,6 @@ func explainableSQL(query string) bool {
 	query = strings.TrimSpace(query)
 	switch sqlOperation(query) {
 	case "SELECT", "INSERT", "UPDATE", "DELETE", "WITH":
-		// Plain EXPLAIN returns the execution plan without running the DML.
 	default:
 		return false
 	}
@@ -69,47 +74,33 @@ func explainableSQL(query string) bool {
 
 func explainCommand(driverName, query string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(driverName)) {
-	case "postgres", "postgresql", "pgx":
+	case "pg", "postgres", "postgresql", "pgx":
 		return "EXPLAIN (FORMAT TEXT) " + query, nil
 	case "sqlite", "sqlite3":
 		return "EXPLAIN QUERY PLAN " + query, nil
 	case "mysql", "mariadb":
 		return "EXPLAIN " + query, nil
 	default:
-		return "", fmt.Errorf("webpprof: EXPLAIN is not supported for SQL driver %q", driverName)
+		return "", fmt.Errorf("webpprof: EXPLAIN is not supported for Bun driver %q", driverName)
 	}
 }
 
-func queryDriver(ctx context.Context, connection driver.Conn, query string, args []driver.NamedValue) (driver.Rows, error) {
-	if contextual, ok := connection.(driver.QueryerContext); ok {
-		return contextual.QueryContext(ctx, query, args)
-	}
-	legacy, ok := connection.(driver.Queryer)
-	if !ok {
-		return nil, errorsUnsupportedExplain()
-	}
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
-	}
-	values, err := sqlNamedValues(args)
+func readSQLPlan(rows *sql.Rows, maxRows, maxBytes int) (string, error) {
+	columns, err := rows.Columns()
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	return legacy.Query(query, values)
-}
-
-func readPlan(rows driver.Rows, maxRows, maxBytes int) (string, error) {
-	columns := rows.Columns()
-	values := make([]driver.Value, len(columns))
+	values := make([]any, len(columns))
+	destinations := make([]any, len(columns))
 	var output strings.Builder
-	for row := 0; row < maxRows; row++ {
-		err := rows.Next(values)
-		if err == io.EOF {
-			return output.String(), nil
+	for row := 0; rows.Next(); row++ {
+		if row >= maxRows {
+			return output.String() + "\n…", nil
 		}
-		if err != nil {
+		for index := range values {
+			destinations[index] = &values[index]
+		}
+		if err := rows.Scan(destinations...); err != nil {
 			return output.String(), err
 		}
 		line := formatPlanRow(columns, values)
@@ -120,10 +111,13 @@ func readPlan(rows driver.Rows, maxRows, maxBytes int) (string, error) {
 			return output.String() + "\n…", nil
 		}
 	}
-	return output.String() + "\n…", nil
+	if err := rows.Err(); err != nil {
+		return output.String(), err
+	}
+	return output.String(), nil
 }
 
-func formatPlanRow(columns []string, values []driver.Value) string {
+func formatPlanRow(columns []string, values []any) string {
 	if len(values) == 1 {
 		return planValue(values[0])
 	}
@@ -138,7 +132,7 @@ func formatPlanRow(columns []string, values []driver.Value) string {
 	return strings.Join(parts, "  ")
 }
 
-func planValue(value driver.Value) string {
+func planValue(value any) string {
 	switch typed := value.(type) {
 	case nil:
 		return "NULL"
@@ -168,6 +162,10 @@ func appendPlanText(output *strings.Builder, value string, maxBytes int) bool {
 	return false
 }
 
-func errorsUnsupportedExplain() error {
-	return fmt.Errorf("webpprof: SQL driver does not expose query execution for EXPLAIN")
+func sqlOperation(query string) string {
+	fields := strings.Fields(query)
+	if len(fields) == 0 {
+		return ""
+	}
+	return strings.ToUpper(fields[0])
 }

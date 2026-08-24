@@ -70,14 +70,50 @@ if err != nil {
     return err
 }
 defer database.Close()
+players := &playerRepository{database: database}
+refreshPlayers := webpprofschedule.ProfileWith(
+    profiler,
+    "players.refresh-snapshot",
+    func(ctx context.Context) {
+        refreshed, err := players.list(ctx)
+        if err != nil {
+            logger.ErrorContext(ctx, "scheduled player refresh failed", "error", err)
+            return
+        }
+        logger.InfoContext(ctx, "scheduled player refresh completed", "count", len(refreshed))
+    },
+)
+rebuildPlayerIndex := webpprofcallable.ProfileWith(
+    profiler,
+    "players.rebuild-search-index",
+    func(ctx context.Context) error {
+        indexed, err := players.list(ctx)
+        if err != nil {
+            return err
+        }
+        logger.InfoContext(ctx, "player search index rebuilt", "count", len(indexed))
+        return nil
+    },
+)
+generatePlayerReport := func(ctx context.Context) error {
+    if _, err := players.list(ctx); err != nil {
+        return err
+    }
+    logger.InfoContext(ctx, "player report generated", "format", "pdf")
+    return nil
+}
 app := &application{
-    profiler: profiler,
-    players:  &playerRepository{database: database},
-    logger:   logger,
-    metrics:  &demoMetrics{},
+    profiler:       profiler,
+    players:        players,
+    logger:         logger,
+    metrics:        &demoMetrics{},
+    refreshPlayers: refreshPlayers,
+    rebuildPlayerIndex: rebuildPlayerIndex,
+    generatePlayerReport: generatePlayerReport,
 }
 
-// One outer HTTP wrapper creates request correlation for everything above.
+// One outer HTTP wrapper creates correlation for HTTP work. Schedule,
+// Callable, and Task executions create their own roots.
 handler := webpprofhttp.MiddlewareWith(profiler, app.routes())
 mux.Handle("/", handler)
 ```
@@ -87,13 +123,16 @@ integration model is exactly the same. There is no global instrumentation and
 no hidden source rewriting: the dependencies are decorated once where the
 application is assembled.
 
-After those three wrappers, webpprof does this automatically:
+After those wrappers, webpprof does this automatically:
 
 | Application code | What appears in webpprof |
 | --- | --- |
 | `http.Handler` serves a request | request method, route, status, duration, headers, bounded bodies, and panic/error data |
 | repository calls `QueryContext` or `ExecContext` | correlated Query, duration, rows/error, callsite, and optional EXPLAIN |
 | handler calls `logger.InfoContext` | correlated Log with level, message, and structured fields |
+| scheduled refresh runs | standalone Schedule execution with its SQL and log nested below the Schedule |
+| custom reindex command runs | standalone Callable execution with its SQL and log nested below the Callable |
+| player report generation runs | standalone Task execution with its SQL and log nested below the Task |
 | named middleware runs | nested Middleware timing in the request timeline |
 | request context flows downstream | request ID, parent operation, and tags propagate to supported profilers |
 | retention limit is reached | the oldest stored entries are evicted first |
@@ -125,6 +164,21 @@ func (a *application) serveMeasured(
     a.metrics.record(measurement.Failed(), measurement.Duration)
 }
 ```
+
+Report generation uses the Task-specific lifecycle because it is a long-running
+application operation rather than a request handler, cron callback, or custom
+command:
+
+```go
+measurement := a.profiler.MeasureTask(ctx, webpprof.Task{
+    Name:   "reports.players.generate",
+    Fields: map[string]any{"format": "pdf"},
+}, a.generatePlayerReport)
+```
+
+The callback receives a standalone Task context, so its real SQLite query and
+slog record appear beneath the Task rather than beneath the HTTP request that
+triggered this example.
 
 Each handler uses the callback context for SQL and slog calls, so those entries
 are nested under `players.list`, `players.get`, or
@@ -174,10 +228,18 @@ go run ./example
 | `GET /api/players` | real multi-row SQLite query and structured slog record |
 | `GET /api/players/42` | automatic parameterized SQL, EXPLAIN, request correlation, and slog |
 | `POST /api/players/42/views` | transaction containing UPDATE and SELECT |
+| `POST /api/schedules/refresh-players` | trigger request plus a separately analyzed Schedule → SQLite query + slog execution tree |
+| `POST /api/callables/rebuild-player-index` | trigger request plus a separately analyzed Callable → SQLite query + slog execution tree |
+| `POST /api/tasks/generate-player-report` | trigger request plus a separately analyzed long-running Task → SQLite query + slog execution tree |
 | `GET /api/failure` | real SQLite error, safe HTTP response, and error-level log |
 | `GET /api/manual/custom-profiler` | isolated hand-written custom profiler Event |
 | `GET /api/manual/diagnostics` | isolated deterministic automatic-finding examples |
 | `GET /panic` | panic capture and recovery |
+
+After running the scheduled refresh or report generation, open its Schedule or
+Task entry and use **Findings** to inspect the automatic analysis of the same
+SQLite and slog execution tree shown in the other tabs. The example report
+takes just over one second so it also demonstrates the `slow_task` finding.
 
 Requests carry `app`, `tenant`, and `scenario` tags. The
 `security-headers` and `request-log` standard HTTP middleware are profiled by

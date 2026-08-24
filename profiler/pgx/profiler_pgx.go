@@ -13,15 +13,20 @@ import (
 	"github.com/levskiy0/webpprof"
 )
 
-// Config names the connection and database shown in captured Query entries.
+// Config names the connection and database shown in captured Query entries and
+// controls optional non-executing EXPLAIN capture.
 type Config struct {
-	Connection string
-	Database   string
+	Connection     string
+	Database       string
+	Explain        bool
+	ExplainTimeout time.Duration
+	ExplainMaxRows int
 }
 
 type queryProfiler struct {
-	profiler *webpprof.Profiler
-	config   Config
+	profiler      *webpprof.Profiler
+	config        Config
+	explainRunner explainRunner
 }
 
 type queryTraceContextKey struct{}
@@ -29,6 +34,7 @@ type queryTraceContextKey struct{}
 type queryTrace struct {
 	startedAt time.Time
 	sql       string
+	args      []any
 	callsite  []webpprof.SourceFrame
 }
 
@@ -71,28 +77,34 @@ func ProfilePoolConfigWith(profiler *webpprof.Profiler, config *pgxpool.Config, 
 }
 
 func (p *queryProfiler) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if isExplainContext(ctx) {
+		return ctx
+	}
 	return context.WithValue(ctx, queryTraceContextKey{}, queryTrace{
 		startedAt: time.Now().UTC(),
-		sql:       compactSQL(data.SQL),
+		sql:       data.SQL,
+		args:      append([]any(nil), data.Args...),
 		callsite:  p.profiler.CaptureQueryCallsite(),
 	})
 }
 
-func (p *queryProfiler) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+func (p *queryProfiler) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
 	trace, ok := ctx.Value(queryTraceContextKey{}).(queryTrace)
 	if !ok {
 		return
 	}
+	duration := time.Since(trace.startedAt)
 	rows := data.CommandTag.RowsAffected()
 	query := webpprof.Query{
-		Meta:         webpprof.Meta{StartedAt: trace.startedAt, Duration: time.Since(trace.startedAt)},
+		Meta:         webpprof.Meta{StartedAt: trace.startedAt, Duration: duration},
 		Connection:   p.config.Connection,
 		Driver:       "pgx",
 		Database:     p.config.Database,
 		Operation:    sqlOperation(trace.sql),
-		SQL:          trace.sql,
+		SQL:          compactSQL(trace.sql),
 		RowsAffected: &rows,
 		Callsite:     trace.callsite,
+		Plan:         p.explain(ctx, conn, trace.sql, trace.args),
 	}
 	if data.Err != nil {
 		query.Error = data.Err.Error()

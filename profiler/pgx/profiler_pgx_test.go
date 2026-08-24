@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -45,6 +46,78 @@ func TestQueryTracerRecordsError(t *testing.T) {
 
 	if query := onlyQuery(t, mux); query.Error != "connection lost" {
 		t.Fatalf("error = %q", query.Error)
+	}
+}
+
+func TestQueryTracerCapturesExplainPlan(t *testing.T) {
+	mux := http.NewServeMux()
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
+	t.Cleanup(func() { _ = profiler.Close() })
+	var explainedSQL string
+	var explainedArgs []any
+	tracer := &queryProfiler{
+		profiler: profiler,
+		config:   Config{Explain: true},
+		explainRunner: func(_ context.Context, _ *pgx.Conn, query string, args []any, _, _ int) (string, error) {
+			explainedSQL = query
+			explainedArgs = append([]any(nil), args...)
+			return "Seq Scan on players  (cost=0.00..12.00 rows=20000 width=8)", nil
+		},
+	}
+
+	ctx := tracer.TraceQueryStart(context.Background(), nil, pgx.TraceQueryStartData{
+		SQL:  "SELECT id FROM players WHERE team_id = $1",
+		Args: []any{42},
+	})
+	tracer.TraceQueryEnd(ctx, nil, pgx.TraceQueryEndData{CommandTag: pgconn.NewCommandTag("SELECT 1")})
+
+	query := onlyQuery(t, mux)
+	if query.Plan == nil || query.Plan.Text == "" || !strings.HasPrefix(query.Plan.Command, "EXPLAIN (FORMAT TEXT) SELECT") {
+		t.Fatalf("plan = %+v", query.Plan)
+	}
+	if explainedSQL != query.Plan.Command || len(explainedArgs) != 1 || explainedArgs[0] != 42 {
+		t.Fatalf("EXPLAIN query/args = %q / %#v", explainedSQL, explainedArgs)
+	}
+}
+
+func TestQueryTracerKeepsExplainErrorSeparate(t *testing.T) {
+	mux := http.NewServeMux()
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
+	t.Cleanup(func() { _ = profiler.Close() })
+	tracer := &queryProfiler{
+		profiler: profiler,
+		config:   Config{Explain: true},
+		explainRunner: func(context.Context, *pgx.Conn, string, []any, int, int) (string, error) {
+			return "", errors.New("plan unavailable")
+		},
+	}
+
+	ctx := tracer.TraceQueryStart(context.Background(), nil, pgx.TraceQueryStartData{SQL: "SELECT 1"})
+	tracer.TraceQueryEnd(ctx, nil, pgx.TraceQueryEndData{CommandTag: pgconn.NewCommandTag("SELECT 1")})
+
+	query := onlyQuery(t, mux)
+	if query.Error != "" || query.Plan == nil || query.Plan.Error != "plan unavailable" {
+		t.Fatalf("query/plan errors = %q / %+v", query.Error, query.Plan)
+	}
+}
+
+func TestExplainableSQLRejectsMultipleStatements(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  bool
+	}{
+		{name: "select", query: "SELECT * FROM players", want: true},
+		{name: "write", query: "DELETE FROM players WHERE id = $1", want: true},
+		{name: "multiple statements", query: "SELECT 1; DELETE FROM players", want: false},
+		{name: "schema change", query: "ALTER TABLE players ADD active bool", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := explainableSQL(test.query); got != test.want {
+				t.Fatalf("explainableSQL(%q) = %v, want %v", test.query, got, test.want)
+			}
+		})
 	}
 }
 

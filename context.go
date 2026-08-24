@@ -10,6 +10,30 @@ type recordingDisabledContextKey struct{}
 type tagsContextKey struct{}
 type parentEntryContextKey struct{}
 
+type uncorrelatedContext struct {
+	context.Context
+}
+
+func (ctx uncorrelatedContext) Value(key any) any {
+	switch key.(type) {
+	case requestContextKey, parentEntryContextKey:
+		return nil
+	default:
+		return ctx.Context.Value(key)
+	}
+}
+
+// WithoutCorrelation returns a context that preserves cancellation, deadlines,
+// tags, recording state, and application values while removing webpprof request
+// and parent-entry correlation. Execution-root integrations use it to avoid
+// becoming children of the caller that invoked them.
+func WithoutCorrelation(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return uncorrelatedContext{Context: ctx}
+}
+
 // WithParentEntry returns a context that makes entryID the default ParentID
 // for profiler entities recorded downstream. An explicit Meta.ParentID always
 // takes precedence.
@@ -226,30 +250,58 @@ func (p *Profiler) LogHTTPCallContext(ctx context.Context, call HTTPCall) {
 	p.LogHTTPCall(call)
 }
 
-// LogScheduleContext records a scheduled task with the default profiler and
-// correlation inherited from ctx.
+// LogScheduleContext records a scheduled task with the default profiler. The
+// Schedule remains an execution root while inheriting tags.
 func LogScheduleContext(ctx context.Context, schedule Schedule) {
 	withDefault(func(p *Profiler) { p.LogScheduleContext(ctx, schedule) })
 }
 
-// LogScheduleContext records a scheduled task with this profiler and correlation
-// inherited from ctx.
+// LogScheduleContext records a scheduled task with this profiler. Request and
+// parent correlation are removed because Schedule is a root entity.
 func (p *Profiler) LogScheduleContext(ctx context.Context, schedule Schedule) {
 	if p == nil || !RecordingEnabled(ctx) {
 		return
 	}
+	rootCtx := WithoutCorrelation(ctx)
 	p.prepareCallsite(KindSchedule, &schedule.Callsite)
-	inheritContextMeta(ctx, &schedule.Meta)
-	if request := RequestFromContext(ctx); request != nil {
-		schedule.RequestID = request.ID()
-		if request.append(func(parent *Request) {
-			schedule.Tags = mergeTags(parent.Tags, schedule.Tags)
-			parent.Schedules = append(parent.Schedules, schedule)
-		}) {
-			return
-		}
-	}
+	inheritContextMeta(rootCtx, &schedule.Meta)
 	p.LogSchedule(schedule)
+}
+
+// LogCallableContext records an explicitly invoked command with the default
+// profiler. The Callable remains an execution root while inheriting tags.
+func LogCallableContext(ctx context.Context, callable Callable) {
+	withDefault(func(p *Profiler) { p.LogCallableContext(ctx, callable) })
+}
+
+// LogCallableContext records an explicitly invoked command with this profiler.
+// Request and parent correlation are removed because Callable is a root entity.
+func (p *Profiler) LogCallableContext(ctx context.Context, callable Callable) {
+	if p == nil || !RecordingEnabled(ctx) {
+		return
+	}
+	rootCtx := WithoutCorrelation(ctx)
+	p.prepareCallsite(KindCallable, &callable.Callsite)
+	inheritContextMeta(rootCtx, &callable.Meta)
+	p.LogCallable(callable)
+}
+
+// LogTaskContext records a measured task with the default profiler. The Task
+// remains an execution root while inheriting tags.
+func LogTaskContext(ctx context.Context, task Task) {
+	withDefault(func(p *Profiler) { p.LogTaskContext(ctx, task) })
+}
+
+// LogTaskContext records a measured task with this profiler. Request and
+// parent correlation are removed because Task is a root entity.
+func (p *Profiler) LogTaskContext(ctx context.Context, task Task) {
+	if p == nil || !RecordingEnabled(ctx) {
+		return
+	}
+	rootCtx := WithoutCorrelation(ctx)
+	p.prepareCallsite(KindTask, &task.Callsite)
+	inheritContextMeta(rootCtx, &task.Meta)
+	p.LogTask(task)
 }
 
 // LogExceptionContext records an exception with the default profiler and

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -106,6 +107,37 @@ func TestProfilerLogsRequestAndChildren(t *testing.T) {
 	}
 }
 
+func TestEventsEndpointFiltersStandaloneExecutionScope(t *testing.T) {
+	mux := http.NewServeMux()
+	profiler := New(mux, WithUnsafeUnauthenticatedAccess())
+	t.Cleanup(func() { _ = profiler.Close() })
+
+	profiler.LogSchedule(Schedule{Meta: Meta{ID: "schedule-run"}, Name: "refresh", State: "succeeded"})
+	profiler.LogQuery(Query{Meta: Meta{ID: "query-1", ParentID: "schedule-run"}, SQL: "SELECT 1"})
+	profiler.LogLog(Log{Meta: Meta{ID: "log-1", ParentID: "query-1"}, Level: "INFO", Message: "refreshed"})
+	profiler.LogEvent(Event{Meta: Meta{ID: "unrelated"}, Kind: "other", Name: "unrelated"})
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/debug/webpprof/api/events?scope_id=schedule-run&limit=10", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	var payload struct {
+		Events []Entry `json:"events"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Events) != 3 {
+		t.Fatalf("scope events = %+v", payload.Events)
+	}
+	for index, wantID := range []string{"schedule-run", "query-1", "log-1"} {
+		if payload.Events[index].ID != wantID {
+			t.Fatalf("scope event %d = %q, want %q", index, payload.Events[index].ID, wantID)
+		}
+	}
+}
+
 func TestContextTagsAreInheritedAndEntityTagsOverrideThem(t *testing.T) {
 	profiler := New(http.NewServeMux(), WithUnsafeUnauthenticatedAccess())
 	t.Cleanup(func() { _ = profiler.Close() })
@@ -142,6 +174,23 @@ func TestContextTagsAreInheritedAndEntityTagsOverrideThem(t *testing.T) {
 	}
 	if tags := TagsFromContext(ctx); tags["tenant"] != "acme" {
 		t.Fatalf("context tags = %+v", tags)
+	}
+}
+
+func TestWithoutCorrelationPreservesApplicationContextAndTags(t *testing.T) {
+	type applicationKey struct{}
+	capture := BeginRequest(Request{Meta: Meta{ID: "request"}})
+	ctx := context.WithValue(context.Background(), applicationKey{}, "value")
+	ctx = WithRequest(ctx, capture)
+	ctx = WithParentEntry(ctx, "handler")
+	ctx = WithTags(ctx, map[string]string{"tenant": "acme"})
+
+	rootCtx := WithoutCorrelation(ctx)
+	if RequestFromContext(rootCtx) != nil || ParentEntryIDFromContext(rootCtx) != "" {
+		t.Fatal("request or parent correlation survived")
+	}
+	if rootCtx.Value(applicationKey{}) != "value" || TagsFromContext(rootCtx)["tenant"] != "acme" {
+		t.Fatal("application value or tags were lost")
 	}
 }
 
@@ -247,6 +296,35 @@ func TestProfilerLogsSchedulePayload(t *testing.T) {
 	}
 }
 
+func TestProfilerLogsCallablePayloadAndResult(t *testing.T) {
+	profiler := New(http.NewServeMux())
+	t.Cleanup(func() { _ = profiler.Close() })
+	profiler.LogCallable(Callable{
+		Meta:    Meta{ID: "callable-payload"},
+		Name:    "players.rebuild-index",
+		State:   "succeeded",
+		Payload: map[string]any{"tenant": "acme", "token": "callable-secret"},
+		Result:  map[string]any{"indexed": 3},
+	})
+
+	entry, ok := profiler.store.get("callable-payload")
+	if !ok {
+		t.Fatal("callable entry not found")
+	}
+	var recorded Callable
+	if err := json.Unmarshal(entry.Data, &recorded); err != nil {
+		t.Fatalf("decode callable: %v", err)
+	}
+	payload, ok := recorded.Payload.(map[string]any)
+	if !ok || payload["tenant"] != "acme" || payload["token"] != "[REDACTED]" {
+		t.Fatalf("callable payload = %#v", recorded.Payload)
+	}
+	result, ok := recorded.Result.(map[string]any)
+	if !ok || result["indexed"] != float64(3) {
+		t.Fatalf("callable result = %#v", recorded.Result)
+	}
+}
+
 func TestProfilerRequiresSessionToken(t *testing.T) {
 	mux := http.NewServeMux()
 	profiler := New(mux, WithToken("profile-secret"))
@@ -341,6 +419,39 @@ func TestCaptureControlsDisableKindsAndRequestSampling(t *testing.T) {
 	stats := profiler.store.stats()
 	if stats.SampleRate != 0 || stats.BodyLimit != 2048 || len(stats.DisabledKinds) != 2 || stats.DisabledKinds[0] != KindLog || stats.DisabledKinds[1] != KindQuery {
 		t.Fatalf("capture stats = %+v", stats)
+	}
+}
+
+func TestWithSidebarKindsControlsOrderAndVisibility(t *testing.T) {
+	tests := []struct {
+		name     string
+		options  []Option
+		expected []Kind
+	}{
+		{
+			name:     "default execution roots before requests",
+			expected: defaultSidebarKinds,
+		},
+		{
+			name:     "custom order ignores duplicates and unsupported kinds",
+			options:  []Option{WithSidebarKinds(KindCallable, KindSchedule, KindRequest, KindCallable, Kind("unknown"), "")},
+			expected: []Kind{KindCallable, KindSchedule, KindRequest},
+		},
+		{
+			name:     "empty hides entity sections",
+			options:  []Option{WithSidebarKinds()},
+			expected: []Kind{},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			profiler := newProfiler(test.options...)
+			t.Cleanup(func() { _ = profiler.Close() })
+			if got := profiler.store.stats().SidebarKinds; !slices.Equal(got, test.expected) {
+				t.Fatalf("SidebarKinds = %v, want %v", got, test.expected)
+			}
+		})
 	}
 }
 
@@ -589,6 +700,12 @@ func TestProfilerServesNativeUI(t *testing.T) {
 	}
 	if !strings.Contains(application.Body.String(), "related-event-table") || !strings.Contains(application.Body.String(), "eventRowCells(event,kind)") {
 		t.Fatal("request relations do not reuse the entity table renderer")
+	}
+	if !strings.Contains(application.Body.String(), "executionGroupFor") || !strings.Contains(application.Body.String(), "scope_id=") || !strings.Contains(application.Body.String(), `tabbedCard("Execution"`) || !strings.Contains(application.Body.String(), "Execution window") || !strings.Contains(application.Body.String(), "loadExecutionAnalysis") || !strings.Contains(application.Body.String(), `{schedule:"schedules",callable:"callables",task:"tasks"}`) || !strings.Contains(application.Body.String(), `state.relatedTab==="findings"`) {
+		t.Fatal("profiler UI does not render schedules, callables, and tasks as analyzed standalone execution roots")
+	}
+	if !strings.Contains(application.Body.String(), `const kinds=["schedule","callable","task","request"`) || !strings.Contains(application.Body.String(), "state.stats.sidebar_kinds") {
+		t.Fatal("profiler UI does not place execution roots before requests or honor sidebar configuration")
 	}
 	if strings.Contains(application.Body.String(), "query-tabs") || strings.Contains(application.Body.String(), "tab-count") || strings.Contains(application.Body.String(), `<span class="card-tab`) {
 		t.Fatal("profiler UI still contains a legacy card-tab renderer")

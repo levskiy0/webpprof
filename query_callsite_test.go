@@ -61,6 +61,8 @@ func TestWithCallsiteKindsCapturesSelectedEntities(t *testing.T) {
 			p.LogHTTPCall(HTTPCall{Meta: Meta{ID: id}, Method: "GET", URL: "https://example.test"})
 		}},
 		{name: "schedule", kind: KindSchedule, log: func(p *Profiler, id string) { p.LogSchedule(Schedule{Meta: Meta{ID: id}, Name: "cleanup"}) }},
+		{name: "callable", kind: KindCallable, log: func(p *Profiler, id string) { p.LogCallable(Callable{Meta: Meta{ID: id}, Name: "reindex"}) }},
+		{name: "task", kind: KindTask, log: func(p *Profiler, id string) { p.LogTask(Task{Meta: Meta{ID: id}, Name: "report.generate"}) }},
 	}
 
 	kinds := make([]Kind, 0, len(tests))
@@ -135,6 +137,8 @@ func TestCallsiteInfrastructureFrames(t *testing.T) {
 		{name: "profiled cache receiver", kind: KindCache, function: "github.com/levskiy0/webpprof/profiler/gocache.(*profiledCache).Get", want: true},
 		{name: "redis profiler receiver", kind: KindCache, function: "github.com/levskiy0/webpprof/profiler/goredis.(*redisProfilerHook).record", want: true},
 		{name: "exported profiler receiver", kind: KindSchedule, function: "github.com/levskiy0/webpprof/profiler/schedule.ProfilerSchedule.Profile.func1", want: true},
+		{name: "callable profiler receiver", kind: KindCallable, function: "github.com/levskiy0/webpprof/profiler/callable.ProfilerCallable.Profile.func1", want: true},
+		{name: "task span", kind: KindTask, function: "github.com/levskiy0/webpprof.(*TaskSpan).FinishResult", want: true},
 		{name: "integration application test", kind: KindQuery, function: "github.com/levskiy0/webpprof/profiler/sql.TestProfilerSQLConnectorRecordsContextQuery", want: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {

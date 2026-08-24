@@ -5,11 +5,51 @@ versioning and are published from `v*` Git tags.
 
 ## Unreleased
 
+## 0.5.0 - 2026-08-24
+
+### Added
+
+- Added the `debug-go-with-webpprof` agent skill for evidence-driven Go API,
+  request, SQL, cache, and data-lifecycle diagnostics through the read-only MCP
+  server.
+
 ### Changed
 
+- Add opt-in, bounded plain EXPLAIN plans to the Bun, GORM, and native pgx
+  database profilers, matching the existing `database/sql` capability.
 - Publish nested profiler, storage, and MCP command modules through
   module-scoped Git tags and `proxy.golang.org` without creating separate
   GitHub Release pages; only root `vX.Y.Z` tags create product releases.
+- Treat every schedule invocation as a standalone execution scope: SQL, logs,
+  HTTP calls, cache operations, and other context-aware work now use the
+  Schedule entry as their parent. The UI, events API, Go client, and MCP server
+  can inspect that complete execution tree, and the bundled example exercises
+  the behavior with a real SQLite query and structured log. Schedule execution
+  pages also expose automatic findings for N+1 queries, SQL share, slow or
+  failed operations, cache behavior, and sequential HTTP calls.
+- Add Callable as a third standalone execution root for custom commands that
+  are neither HTTP requests nor scheduled tasks. The core contract, wrapper,
+  analyzer, UI, HTTP/Go/MCP inspection APIs, example, and tests all expose its
+  complete `ParentID` execution tree.
+- Add Task as a standalone execution root for measured application work such
+  as report generation. `StartTask` and `MeasureTask` time the operation,
+  parent nested queries, logs, HTTP calls, and other context-aware entries,
+  preserve errors and panics, and expose the complete scope to the analyzer,
+  UI, HTTP/Go client, MCP, example, and tests.
+- Place Schedules, Callables, and Tasks before Requests in the default sidebar and add
+  `WithSidebarKinds` for independently ordering or hiding entity sections
+  without changing capture behavior.
+- Expand automatic analysis to failed core operations, slow measured events,
+  execution bottlenecks, and conservative normalized EXPLAIN concerns. N+1
+  detection now groups read queries by database and execution locality.
+
+### Fixed
+
+- Include measured custom Events in Timeline critical-path and bottleneck
+  calculation, so a long programmatic Task step is not hidden by a tiny nested
+  SQL operation.
+- Measure `database/sql` queries until rows reach EOF, fail, or are closed, so
+  recorded duration and row-stream errors cover the complete query lifecycle.
 
 ## 0.4.2 - 2026-08-24
 

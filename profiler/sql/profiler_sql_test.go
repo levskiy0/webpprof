@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/levskiy0/webpprof"
 )
@@ -22,9 +23,10 @@ type driverStub struct{}
 type connectionStub struct{}
 
 type rowsStub struct {
-	columns []string
-	rows    [][]driver.Value
-	index   int
+	columns       []string
+	rows          [][]driver.Value
+	index         int
+	terminalError error
 }
 
 func (connectorStub) Connect(context.Context) (driver.Conn, error) {
@@ -62,6 +64,9 @@ func (connectionStub) QueryContext(_ context.Context, query string, _ []driver.N
 			rows:    [][]driver.Value{{int64(2), int64(0), int64(0), "SEARCH players USING INTEGER PRIMARY KEY (rowid=?)"}},
 		}, nil
 	}
+	if strings.Contains(query, "broken_rows") {
+		return &rowsStub{columns: []string{"id"}, terminalError: errors.New("row stream failed")}, nil
+	}
 	return &rowsStub{columns: []string{"id"}}, nil
 }
 
@@ -70,6 +75,9 @@ func (r *rowsStub) Close() error      { return nil }
 
 func (r *rowsStub) Next(destination []driver.Value) error {
 	if r.index >= len(r.rows) {
+		if r.terminalError != nil {
+			return r.terminalError
+		}
 		return io.EOF
 	}
 	copy(destination, r.rows[r.index])
@@ -139,11 +147,23 @@ func TestProfilerSQLExplainCapturesPlanWithoutExecutingItAsTheQuery(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/debug/webpprof/api/events?kind=query&limit=10", nil))
+	var beforeClose struct {
+		Events []webpprof.Entry `json:"events"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &beforeClose); err != nil {
+		t.Fatal(err)
+	}
+	if len(beforeClose.Events) != 0 {
+		t.Fatalf("query recorded before rows were consumed or closed: %+v", beforeClose.Events)
+	}
+	time.Sleep(15 * time.Millisecond)
 	if err := rows.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	response := httptest.NewRecorder()
+	response = httptest.NewRecorder()
 	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/debug/webpprof/api/events?kind=query&limit=10", nil))
 	var payload struct {
 		Events []webpprof.Entry `json:"events"`
@@ -163,6 +183,9 @@ func TestProfilerSQLExplainCapturesPlanWithoutExecutingItAsTheQuery(t *testing.T
 	}
 	if !strings.HasPrefix(query.Plan.Command, "EXPLAIN QUERY PLAN SELECT") || query.SQL != "SELECT id FROM players WHERE id = ?" {
 		t.Fatalf("query = %+v", query)
+	}
+	if query.Duration < 10*time.Millisecond {
+		t.Fatalf("query duration = %s, want it to include rows lifetime", query.Duration)
 	}
 }
 
@@ -206,6 +229,47 @@ func TestProfilerSQLExplainCapturesUpdatePlan(t *testing.T) {
 	}
 	if !strings.HasPrefix(query.Plan.Command, "EXPLAIN QUERY PLAN UPDATE") || query.Operation != "UPDATE" {
 		t.Fatalf("query = %+v", query)
+	}
+}
+
+func TestProfilerSQLRecordsRowIterationErrors(t *testing.T) {
+	mux := http.NewServeMux()
+	profiler := webpprof.New(mux, webpprof.WithUnsafeUnauthenticatedAccess())
+	t.Cleanup(func() { _ = profiler.Close() })
+	db := stdlibsql.OpenDB(ProfileConnectorWith(profiler, connectorStub{}, Config{Driver: "fake"}))
+	t.Cleanup(func() { _ = db.Close() })
+
+	rows, err := db.QueryContext(context.Background(), "SELECT id FROM broken_rows")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows.Next() {
+		t.Fatal("rows.Next() unexpectedly returned a row")
+	}
+	if err := rows.Err(); err == nil || err.Error() != "row stream failed" {
+		t.Fatalf("rows.Err() = %v", err)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/debug/webpprof/api/events?kind=query&limit=10", nil))
+	var payload struct {
+		Events []webpprof.Entry `json:"events"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Events) != 1 {
+		t.Fatalf("events = %+v", payload.Events)
+	}
+	var query webpprof.Query
+	if err := json.Unmarshal(payload.Events[0].Data, &query); err != nil {
+		t.Fatal(err)
+	}
+	if query.Error != "row stream failed" {
+		t.Fatalf("query error = %q", query.Error)
 	}
 }
 

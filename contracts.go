@@ -25,6 +25,10 @@ const (
 	KindHTTPCall Kind = "http_call"
 	// KindSchedule identifies a scheduled task execution.
 	KindSchedule Kind = "schedule"
+	// KindCallable identifies an explicitly invoked custom command execution.
+	KindCallable Kind = "callable"
+	// KindTask identifies a measured long-running application task.
+	KindTask Kind = "task"
 	// KindException identifies a captured error or panic.
 	KindException Kind = "exception"
 	// KindEvent identifies a custom application event.
@@ -122,11 +126,34 @@ type SourceFrame struct {
 // QueryPlan contains a non-executing SQL EXPLAIN result. Duration measures the
 // plan lookup itself and is intentionally separate from Query.Duration.
 type QueryPlan struct {
-	Command  string        `json:"command,omitempty"`
-	Format   string        `json:"format,omitempty"`
-	Text     string        `json:"text,omitempty"`
-	Duration time.Duration `json:"duration_ns,omitempty"`
-	Error    string        `json:"error,omitempty"`
+	Command  string           `json:"command,omitempty"`
+	Format   string           `json:"format,omitempty"`
+	Text     string           `json:"text,omitempty"`
+	Duration time.Duration    `json:"duration_ns,omitempty"`
+	Issues   []QueryPlanIssue `json:"issues,omitempty"`
+	Error    string           `json:"error,omitempty"`
+}
+
+// QueryPlanIssueCode identifies a normalized concern found in a plain SQL
+// EXPLAIN plan. Codes are stable across supported database drivers.
+type QueryPlanIssueCode string
+
+const (
+	// QueryPlanIssueFullScan reports a sequential or full table scan.
+	QueryPlanIssueFullScan QueryPlanIssueCode = "full_scan"
+	// QueryPlanIssueTemporarySort reports an explicit temporary sort or table.
+	QueryPlanIssueTemporarySort QueryPlanIssueCode = "temporary_sort"
+	// QueryPlanIssueLargeEstimate reports a large row estimate in a plan node.
+	QueryPlanIssueLargeEstimate QueryPlanIssueCode = "large_estimate"
+)
+
+// QueryPlanIssue is a conservative, driver-independent interpretation of one
+// plain EXPLAIN plan line. Detail retains the supporting plan fragment.
+type QueryPlanIssue struct {
+	Code          QueryPlanIssueCode `json:"code"`
+	Relation      string             `json:"relation,omitempty"`
+	EstimatedRows int64              `json:"estimated_rows,omitempty"`
+	Detail        string             `json:"detail,omitempty"`
 }
 
 // Address identifies one email sender or recipient.
@@ -225,6 +252,29 @@ type Schedule struct {
 	Panic     string        `json:"panic,omitempty"`
 }
 
+// Callable describes one explicitly invoked custom command and its outcome.
+type Callable struct {
+	Meta
+	Name     string        `json:"name"`
+	State    string        `json:"state,omitempty"`
+	Payload  any           `json:"payload,omitempty"`
+	Result   any           `json:"result,omitempty"`
+	Callsite []SourceFrame `json:"callsite,omitempty"`
+	Error    string        `json:"error,omitempty"`
+	Panic    string        `json:"panic,omitempty"`
+}
+
+// Task describes one measured long-running application operation.
+type Task struct {
+	Meta
+	Name     string         `json:"name"`
+	State    string         `json:"state,omitempty"`
+	Fields   map[string]any `json:"fields,omitempty"`
+	Callsite []SourceFrame  `json:"callsite,omitempty"`
+	Error    string         `json:"error,omitempty"`
+	Panic    string         `json:"panic,omitempty"`
+}
+
 // Exception describes a captured error or recovered panic with an optional stack.
 type Exception struct {
 	Meta
@@ -288,6 +338,7 @@ type Stats struct {
 	BodyLimit     int64   `json:"body_limit"`
 	SampleRate    float64 `json:"request_sample_rate"`
 	DisabledKinds []Kind  `json:"disabled_kinds,omitempty"`
+	SidebarKinds  []Kind  `json:"sidebar_kinds"`
 }
 
 // RuntimeStats is a point-in-time snapshot of selected Go runtime metrics.

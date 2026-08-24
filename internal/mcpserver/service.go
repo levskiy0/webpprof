@@ -28,6 +28,7 @@ type ProfilerClient interface {
 	Event(context.Context, string) (webpprof.Entry, error)
 	RequestAnalysis(context.Context, string) (webpprof.RequestAnalysis, error)
 	InspectRequest(context.Context, string, int) (client.RequestReport, error)
+	InspectEvent(context.Context, string, int) (client.EventReport, error)
 	WaitForRequest(context.Context, client.WaitForRequestOptions) (client.RequestSummary, error)
 }
 
@@ -169,11 +170,53 @@ func (s *Service) InspectRequest(ctx context.Context, input InspectRequestInput)
 	}, nil
 }
 
+// InspectEventInput selects a standalone execution root and controls detail.
+type InspectEventInput struct {
+	EventID         string `json:"event_id" jsonschema:"captured execution root ID such as a schedule callable or task ID"`
+	MaxEvents       int    `json:"max_events,omitempty" jsonschema:"maximum descendant events to return, capped at 1000"`
+	IncludePayloads bool   `json:"include_payloads,omitempty" jsonschema:"include bounded captured bodies values arguments and stacks"`
+}
+
+// InspectEventOutput contains one execution root and its ParentID hierarchy.
+type InspectEventOutput struct {
+	Event    EventSummary          `json:"event"`
+	Findings []webpprof.Finding    `json:"findings,omitempty"`
+	Counts   map[webpprof.Kind]int `json:"counts"`
+	Events   []EventSummary        `json:"events"`
+	HasMore  bool                  `json:"has_more"`
+}
+
+// InspectEvent builds an agent-safe view of a standalone execution tree.
+func (s *Service) InspectEvent(ctx context.Context, input InspectEventInput) (InspectEventOutput, error) {
+	eventID := strings.TrimSpace(input.EventID)
+	if eventID == "" {
+		return InspectEventOutput{}, errors.New("inspect event: event_id is required")
+	}
+	limit := boundedLimit(input.MaxEvents, defaultEventLimit, maxEventLimit)
+	report, err := s.client.InspectEvent(ctx, eventID, limit)
+	if err != nil {
+		return InspectEventOutput{}, fmt.Errorf("inspect event: %w", err)
+	}
+	events := make([]EventSummary, 0, len(report.Events))
+	for _, entry := range report.Events {
+		events = append(events, summarizeEntry(entry, input.IncludePayloads))
+	}
+	output := InspectEventOutput{
+		Event:    summarizeEntry(report.Entry, input.IncludePayloads),
+		Findings: report.Findings,
+		Counts:   report.Counts,
+		Events:   events,
+		HasMore:  report.HasMore,
+	}
+	return output, nil
+}
+
 // SearchEventsInput filters a bounded scan of captured events.
 type SearchEventsInput struct {
 	Query         string   `json:"query,omitempty" jsonschema:"case-insensitive text found in event JSON"`
 	Kind          string   `json:"kind,omitempty" jsonschema:"event kind such as query cache log http_call or exception"`
 	RequestID     string   `json:"request_id,omitempty" jsonschema:"restrict results to one request timeline"`
+	ScopeID       string   `json:"scope_id,omitempty" jsonschema:"restrict results to one execution root and its ParentID descendants"`
 	Tags          []string `json:"tags,omitempty" jsonschema:"tag filters in key or key=value form"`
 	After         uint64   `json:"after,omitempty" jsonschema:"return events newer than this cursor"`
 	Before        uint64   `json:"before,omitempty" jsonschema:"return events older than this cursor"`
@@ -196,6 +239,7 @@ func (s *Service) SearchEvents(ctx context.Context, input SearchEventsInput) (Se
 	page, err := s.client.ListEvents(ctx, client.ListEventsOptions{
 		Kind:        webpprof.Kind(strings.TrimSpace(input.Kind)),
 		RequestID:   strings.TrimSpace(input.RequestID),
+		ScopeID:     strings.TrimSpace(input.ScopeID),
 		Tags:        input.Tags,
 		Query:       input.Query,
 		MinDuration: time.Duration(input.MinDurationMS * float64(time.Millisecond)),
@@ -356,6 +400,23 @@ func summarizeDetail(entry webpprof.Entry, includePayloads bool) any {
 		if json.Unmarshal(entry.Data, &value) == nil {
 			if !includePayloads {
 				value.Payload = nil
+			}
+			return value
+		}
+	case webpprof.KindCallable:
+		var value webpprof.Callable
+		if json.Unmarshal(entry.Data, &value) == nil {
+			if !includePayloads {
+				value.Payload = nil
+				value.Result = nil
+			}
+			return value
+		}
+	case webpprof.KindTask:
+		var value webpprof.Task
+		if json.Unmarshal(entry.Data, &value) == nil {
+			if !includePayloads {
+				value.Fields = nil
 			}
 			return value
 		}

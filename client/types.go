@@ -16,6 +16,9 @@ type ListEventsOptions struct {
 	// RequestID matches the request itself and directly or asynchronously
 	// correlated entries.
 	RequestID string
+	// ScopeID matches one execution root and every entry connected to it through
+	// the ParentID hierarchy. It is useful for standalone execution roots.
+	ScopeID string
 	// Tags contains key or key=value selectors. Every selector must match.
 	Tags []string
 	// Query performs a case-insensitive search over entry metadata, tags, and
@@ -71,6 +74,15 @@ type RequestReport struct {
 	Counts   map[webpprof.Kind]int    `json:"counts"`
 	HasMore  bool                     `json:"has_more"`
 	Analysis webpprof.RequestAnalysis `json:"analysis"`
+}
+
+// EventReport contains one execution root and its bounded ParentID hierarchy.
+type EventReport struct {
+	Entry    webpprof.Entry        `json:"entry"`
+	Events   []webpprof.Entry      `json:"events"`
+	Counts   map[webpprof.Kind]int `json:"counts"`
+	HasMore  bool                  `json:"has_more"`
+	Findings []webpprof.Finding    `json:"findings,omitempty"`
 }
 
 // WaitForRequestOptions filters newly captured request events.

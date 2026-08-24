@@ -16,11 +16,14 @@ import (
 )
 
 type application struct {
-	profiler *webpprof.Profiler
-	players  *playerRepository
-	logger   *slog.Logger
-	metrics  *demoMetrics
-	manual   *manualExamples
+	profiler             *webpprof.Profiler
+	players              *playerRepository
+	logger               *slog.Logger
+	metrics              *demoMetrics
+	manual               *manualExamples
+	refreshPlayers       func(context.Context)
+	rebuildPlayerIndex   func(context.Context) error
+	generatePlayerReport func(context.Context) error
 }
 
 func (a *application) routes() *http.ServeMux {
@@ -29,6 +32,9 @@ func (a *application) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/players", a.listPlayers)
 	mux.HandleFunc("GET /api/players/{id}", a.getPlayer)
 	mux.HandleFunc("POST /api/players/{id}/views", a.incrementPlayerViews)
+	mux.HandleFunc("POST /api/schedules/refresh-players", a.runPlayerRefresh)
+	mux.HandleFunc("POST /api/callables/rebuild-player-index", a.runPlayerIndexRebuild)
+	mux.HandleFunc("POST /api/tasks/generate-player-report", a.runPlayerReport)
 	mux.HandleFunc("GET /api/failure", a.databaseFailure)
 	if a.manual != nil {
 		mux.HandleFunc("GET /api/manual/custom-profiler", a.customProfilerExample)
@@ -82,6 +88,54 @@ func (a *application) incrementPlayerViews(w http.ResponseWriter, r *http.Reques
 func (a *application) databaseFailure(w http.ResponseWriter, r *http.Request) {
 	a.serveMeasured("players.failure", func(ctx context.Context) error {
 		return a.players.forceFailure(ctx)
+	}, w, r)
+}
+
+func (a *application) runPlayerRefresh(w http.ResponseWriter, r *http.Request) {
+	a.serveMeasured("schedules.refresh-players", func(ctx context.Context) error {
+		if a.refreshPlayers == nil {
+			return errors.New("scheduled player refresh is not configured")
+		}
+		// The schedule wrapper removes HTTP correlation itself while preserving
+		// cancellation, application values, and business tags.
+		a.refreshPlayers(ctx)
+		return writeJSON(w, http.StatusOK, map[string]any{
+			"ok":      true,
+			"message": "Scheduled player snapshot refresh completed",
+		})
+	}, w, r)
+}
+
+func (a *application) runPlayerIndexRebuild(w http.ResponseWriter, r *http.Request) {
+	a.serveMeasured("callables.rebuild-player-index", func(ctx context.Context) error {
+		if a.rebuildPlayerIndex == nil {
+			return errors.New("player index callable is not configured")
+		}
+		// The callable wrapper removes HTTP correlation itself while preserving
+		// cancellation, application values, and business tags.
+		if err := a.rebuildPlayerIndex(ctx); err != nil {
+			return err
+		}
+		return writeJSON(w, http.StatusOK, map[string]any{
+			"ok":      true,
+			"message": "Player search index rebuilt",
+		})
+	}, w, r)
+}
+
+func (a *application) runPlayerReport(w http.ResponseWriter, r *http.Request) {
+	a.serveMeasured("tasks.generate-player-report", func(ctx context.Context) error {
+		if a.generatePlayerReport == nil {
+			return errors.New("player report task is not configured")
+		}
+		measurement := a.profiler.MeasureTask(ctx, webpprof.Task{
+			Name:   "reports.players.generate",
+			Fields: map[string]any{"format": "pdf"},
+		}, a.generatePlayerReport)
+		if measurement.Err != nil {
+			return measurement.Err
+		}
+		return writeJSON(w, http.StatusOK, map[string]any{"ok": true, "duration_ms": measurement.Duration.Milliseconds(), "message": "Player report generated"})
 	}, w, r)
 }
 

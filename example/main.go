@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/levskiy0/webpprof"
+	webpprofcallable "github.com/levskiy0/webpprof/profiler/callable"
 	webpprofhttp "github.com/levskiy0/webpprof/profiler/http"
+	webpprofschedule "github.com/levskiy0/webpprof/profiler/schedule"
 	webpprofslog "github.com/levskiy0/webpprof/profiler/slog"
 	webpprofsql "github.com/levskiy0/webpprof/profiler/sql"
 	webpprofsqlite "github.com/levskiy0/webpprof/storage/sqlite"
@@ -50,9 +52,9 @@ func run() (runErr error) {
 
 	// CONNECT WEBPPROF
 	//
-	// The application remains ordinary net/http + database/sql + slog. Its
-	// three boundaries are decorated once here; application code below keeps
-	// using the standard APIs.
+	// The application remains ordinary net/http + database/sql + slog plus one
+	// scheduled callback and custom command. Their boundaries are decorated once here; application
+	// code below keeps using the standard APIs.
 	profiler := webpprof.New(mux, profilerOptions(metrics, profilerStore)...)
 	defer func() { runErr = errors.Join(runErr, profiler.Close()) }()
 
@@ -75,12 +77,57 @@ func run() (runErr error) {
 	}
 	defer func() { runErr = errors.Join(runErr, database.Close()) }()
 
+	players := &playerRepository{database: database}
+	refreshPlayers := webpprofschedule.ProfileWith(profiler, "players.refresh-snapshot", func(ctx context.Context) {
+		refreshed, refreshErr := players.list(ctx)
+		if refreshErr != nil {
+			logger.ErrorContext(ctx, "scheduled player refresh failed", "error", refreshErr)
+			return
+		}
+		logger.InfoContext(ctx, "scheduled player refresh completed", "count", len(refreshed))
+	})
+	rebuildPlayerIndex := webpprofcallable.ProfileWith(profiler, "players.rebuild-search-index", func(ctx context.Context) error {
+		indexed, rebuildErr := players.list(ctx)
+		if rebuildErr != nil {
+			logger.ErrorContext(ctx, "player search index rebuild failed", "error", rebuildErr)
+			return rebuildErr
+		}
+		logger.InfoContext(ctx, "player search index rebuilt", "count", len(indexed))
+		return nil
+	})
+	generatePlayerReport := func(ctx context.Context) error {
+		playersForReport, load := webpprof.MeasureValueWith(profiler, ctx, webpprof.Event{
+			Kind: "task.step",
+			Name: "reports.players.load",
+		}, players.list)
+		if load.Err != nil {
+			return load.Err
+		}
+		render := profiler.Measure(ctx, webpprof.Event{
+			Kind: "task.step",
+			Name: "reports.players.render",
+		}, func(renderContext context.Context) error {
+			timer := time.NewTimer(1100 * time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-renderContext.Done():
+				return renderContext.Err()
+			case <-timer.C:
+			}
+			logger.InfoContext(renderContext, "player report generated", "format", "pdf", "rows", len(playersForReport))
+			return nil
+		})
+		return render.Err
+	}
 	webApplication := &application{
-		profiler: profiler,
-		players:  &playerRepository{database: database},
-		logger:   logger,
-		metrics:  metrics,
-		manual:   newManualExamples(profiler),
+		profiler:             profiler,
+		players:              players,
+		logger:               logger,
+		metrics:              metrics,
+		manual:               newManualExamples(profiler),
+		refreshPlayers:       refreshPlayers,
+		rebuildPlayerIndex:   rebuildPlayerIndex,
+		generatePlayerReport: generatePlayerReport,
 	}
 	appHandler := http.Handler(webApplication.routes())
 

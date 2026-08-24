@@ -41,8 +41,9 @@ request profiler, SQL query profiler, debug toolbar, and observability dashboard
 
 - Inspect method, route, status, duration, headers, bounded bodies, raw HTTP,
   and ready-to-run cURL for captured requests.
-- Correlate middleware, SQL, cache, jobs, logs, mail, outgoing HTTP, schedules,
-  exceptions, and custom events through `context.Context`.
+- Correlate middleware, SQL, cache, jobs, logs, mail, outgoing HTTP,
+  exceptions, and custom events through `context.Context`; inspect Schedule,
+  Callable, and measured Task work as standalone execution roots.
 - Find possible N+1 queries, SQL-heavy requests, sequential HTTP calls, cache
   miss/query bursts, slow middleware, and direct operation failures.
 - Explore a request-wide waterfall with nesting, critical path, bottleneck, and
@@ -145,7 +146,7 @@ go install github.com/levskiy0/webpprof/cmd/webpprof-mcp@latest
 webpprof-mcp --version
 ```
 
-For a reproducible install, replace `@latest` with `@v0.4.1`.
+For a reproducible install, replace `@latest` with `@v0.5.0`.
 The executable is written to `GOBIN`, or `GOPATH/bin` when `GOBIN` is unset.
 
 The MCP command is versioned independently. Its versions are published as
@@ -201,10 +202,31 @@ for the annotated wiring, automatic behavior, routes, and configuration.
 | Outgoing call | HTTP, gRPC | Method, target, status, bounded payloads, duration, error |
 | Messaging | NATS, kafka-go | Subject/topic, producer/consumer state, size, duration, error |
 | Schedule | schedule | Name, planned time, state, duration, error or panic |
+| Callable | callable | Custom command name, state, duration, payload/result, error or panic |
+| Task | core `StartTask` / `MeasureTask` | Application operation name, state, fields, duration, error or panic |
 | Exception/event | HTTP recovery or manual API | Type, message, stack, custom fields and tags |
 
 All entity types also have context-aware manual logging APIs. See the complete
 [event and entity reference](docs/event-reference.md).
+
+Use Task for a long-running application operation that is neither an incoming
+request, a scheduled callback, nor a callable command. It becomes an independent
+execution root; pass the callback context to dependencies so its queries, logs,
+cache operations, and outgoing calls appear in the same scope:
+
+```go
+measurement := profiler.MeasureTask(ctx, webpprof.Task{
+    Name:   "reports.players.generate",
+    Fields: map[string]any{"format": "pdf"},
+}, func(taskCtx context.Context) error {
+    return reports.Generate(taskCtx)
+})
+
+return measurement.Err
+```
+
+Use `StartTask` and `FinishResult` when the lifecycle crosses function
+boundaries or result fields are only known at completion.
 
 For application services and unsupported dependencies, measure a block without
 writing stopwatch/error boilerplate:
@@ -238,6 +260,7 @@ Core and standard-library profilers ship in the root module:
 | `profiler/slog` | Standard `slog.Handler` |
 | `profiler/email` | Dependency-neutral mail `Sender` |
 | `profiler/schedule` | Scheduled `func(context.Context)` callbacks |
+| `profiler/callable` | Custom `func(context.Context) error` commands |
 
 Optional integrations are isolated modules:
 
@@ -259,7 +282,7 @@ duplicates.
 See [installation and recipes for every profiler](docs/integrations.md) and
 [SQL callsites, EXPLAIN, and replay](docs/sql-profiling.md).
 
-## Request correlation and findings
+## Execution correlation and findings
 
 The request middleware stores a capture in `context.Context`. Context-aware
 profilers and `Log*Context` functions inherit the request ID, tags, and current
@@ -277,7 +300,9 @@ flowchart LR
 
 Automatic findings currently cover repeated query fingerprints, SQL wall-clock
 coverage, sequential safe HTTP calls, cache miss/query bursts, slow middleware,
-slow operations, and failed jobs, mail, or HTTP calls.
+slow operations, and failed execution roots, jobs, mail, or HTTP calls. Schedule
+and Callable wrappers plus the Task lifecycle create independent roots and
+parent their nested work.
 
 See [request correlation, tags, middleware timing, and finding rules](docs/correlation.md).
 

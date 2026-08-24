@@ -14,10 +14,14 @@ import (
 
 const pluginName = "webpprof"
 
-// Config names the connection and database shown in captured Query entries.
+// Config names the connection and database shown in captured Query entries and
+// controls optional non-executing EXPLAIN capture.
 type Config struct {
-	Connection string
-	Database   string
+	Connection     string
+	Database       string
+	Explain        bool
+	ExplainTimeout time.Duration
+	ExplainMaxRows int
 }
 
 // Plugin implements gorm.Plugin.
@@ -122,6 +126,7 @@ func (p *Plugin) after(db *gorm.DB, fallbackOperation string) {
 	if !ok {
 		return
 	}
+	duration := time.Since(trace.startedAt)
 	querySQL := compactSQL(db.Statement.SQL.String())
 	operation := sqlOperation(querySQL)
 	if operation == "SQL" {
@@ -129,7 +134,7 @@ func (p *Plugin) after(db *gorm.DB, fallbackOperation string) {
 	}
 	rows := db.RowsAffected
 	query := webpprof.Query{
-		Meta:         webpprof.Meta{StartedAt: trace.startedAt, Duration: time.Since(trace.startedAt)},
+		Meta:         webpprof.Meta{StartedAt: trace.startedAt, Duration: duration},
 		Connection:   p.config.Connection,
 		Driver:       db.Dialector.Name(),
 		Database:     p.config.Database,
@@ -137,6 +142,7 @@ func (p *Plugin) after(db *gorm.DB, fallbackOperation string) {
 		SQL:          querySQL,
 		RowsAffected: &rows,
 		Callsite:     trace.callsite,
+		Plan:         p.explain(db, querySQL, fallbackOperation),
 	}
 	if db.Error != nil {
 		query.Error = db.Error.Error()

@@ -26,13 +26,18 @@ type queryTraceContextKey struct{}
 type queryTrace struct {
 	startedAt time.Time
 	callsite  []webpprof.SourceFrame
+	plan      *webpprof.QueryPlan
 }
 
-// Config supplies connection metadata shown beside captured Bun queries.
+// Config supplies connection metadata and optional non-executing EXPLAIN
+// behavior for captured Bun queries.
 type Config struct {
-	Connection string
-	Driver     string
-	Database   string
+	Connection     string
+	Driver         string
+	Database       string
+	Explain        bool
+	ExplainTimeout time.Duration
+	ExplainMaxRows int
 }
 
 // New creates a Bun integration. Only the first optional Config is used.
@@ -78,21 +83,26 @@ func ProfileWith(profiler *webpprof.Profiler, db *bun.DB, configs ...Config) *bu
 	return webpprof.ProfileWith(profiler, db, New(configs...))
 }
 
-func (h *bunQueryProfiler) BeforeQuery(ctx context.Context, _ *bun.QueryEvent) context.Context {
+func (h *bunQueryProfiler) BeforeQuery(ctx context.Context, source *bun.QueryEvent) context.Context {
+	plan := h.explain(ctx, source)
 	return context.WithValue(ctx, queryTraceContextKey{}, queryTrace{
 		startedAt: time.Now().UTC(),
 		callsite:  h.profiler.CaptureQueryCallsite(),
+		plan:      plan,
 	})
 }
 
 func (h *bunQueryProfiler) AfterQuery(ctx context.Context, source *bun.QueryEvent) {
 	startedAt := source.StartTime.UTC()
 	var callsite []webpprof.SourceFrame
+	var plan *webpprof.QueryPlan
 	if trace, ok := ctx.Value(queryTraceContextKey{}).(queryTrace); ok {
 		startedAt = trace.startedAt
 		callsite = trace.callsite
+		plan = trace.plan
 	}
-	event := webpprof.Query{Meta: webpprof.Meta{StartedAt: startedAt, Duration: time.Since(startedAt)}, Connection: h.config.Connection, Driver: h.config.Driver, Database: h.config.Database, Operation: source.Operation(), SQL: compactSQL(source.QueryTemplate), Callsite: callsite}
+	duration := time.Since(startedAt)
+	event := webpprof.Query{Meta: webpprof.Meta{StartedAt: startedAt, Duration: duration}, Connection: h.config.Connection, Driver: h.config.Driver, Database: h.config.Database, Operation: source.Operation(), SQL: compactSQL(source.QueryTemplate), Callsite: callsite, Plan: plan}
 	if event.SQL == "" {
 		event.SQL = compactSQL(source.Query)
 	}

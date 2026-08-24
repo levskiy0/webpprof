@@ -22,6 +22,7 @@ go get github.com/levskiy0/webpprof@latest
 | `profiler/slog` | Wrap `slog.Handler` before constructing the logger. | Level, message, fields, request correlation |
 | `profiler/email` | Wrap the dependency-neutral `Sender`. | Mail state, addresses, subject, duration, error |
 | `profiler/schedule` | Wrap a named `func(context.Context)`. | Planned time, state, duration, error, panic |
+| `profiler/callable` | Wrap a named `func(context.Context) error`. | Command name, state, duration, returned error, panic |
 
 ```go
 handler = webpprofhttp.MiddlewareWith(profiler, handler)
@@ -29,7 +30,30 @@ httpClient.Transport = webpprofhttp.ProfileTransportWith(profiler, httpClient.Tr
 logger = slog.New(webpprofslog.ProfileWith(profiler, logger.Handler()))
 sender = webpprofemail.ProfileWith(profiler, sender)
 cleanup = webpprofschedule.ProfileWith(profiler, "expired-sessions", cleanup)
+reindex = webpprofcallable.ProfileWith(profiler, "players.reindex", reindex)
 ```
+
+The Schedule and Callable wrappers give every invocation its own entry ID and
+pass a child context to the executed function. Pass that context to SQL, cache,
+HTTP, logging, and other context-aware integrations: their entries use the root
+invocation as `ParentID` and appear in its Queries, Cache, Logs, HTTP Client,
+Events, and Timeline tabs. The Findings tab analyzes that complete execution
+tree. Both wrappers deliberately remove request and parent correlation while
+preserving cancellation, application context values, recording state, and
+business tags.
+
+Long-running application work that does not fit either wrapper can use the
+core Task lifecycle directly:
+
+```go
+measurement := profiler.MeasureTask(ctx, webpprof.Task{
+    Name:   "reports.players.generate",
+    Fields: map[string]any{"format": "pdf"},
+}, reports.Generate)
+```
+
+`MeasureTask` and `StartTask` apply the same standalone-root and child-context
+semantics and expose Task-specific automatic analysis.
 
 Wrap `database/sql` before creating the pool:
 
@@ -81,29 +105,39 @@ if err != nil {
     return err
 }
 poolConfig = webpprofpgx.ProfilePoolConfigWith(profiler, poolConfig, webpprofpgx.Config{
-    Connection: "primary",
-    Database:   "app",
+	Connection:     "primary",
+	Database:       "app",
+	Explain:        true,
+	ExplainTimeout: 500 * time.Millisecond,
+	ExplainMaxRows: 100,
 })
 pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 
 // GORM callbacks cover create, query, update, delete, row, and raw operations.
 if err := webpprofgorm.ProfileWith(profiler, gormDB, webpprofgorm.Config{
-    Connection: "primary",
-    Database:   "app",
+	Connection:     "primary",
+	Database:       "app",
+	Explain:        true,
+	ExplainTimeout: 500 * time.Millisecond,
+	ExplainMaxRows: 100,
 }); err != nil {
     return err
 }
 
 // Bun uses a query hook. Do not also wrap its underlying database/sql driver.
 bunDB = webpprofbun.ProfileWith(profiler, bunDB, webpprofbun.Config{
-    Connection: "primary",
-    Driver:     "postgresql",
-    Database:   "app",
+	Connection:     "primary",
+	Driver:         "postgresql",
+	Database:       "app",
+	Explain:        true,
+	ExplainTimeout: 500 * time.Millisecond,
+	ExplainMaxRows: 100,
 })
 ```
 
 Pass the operation context to pgx and Bun. Use `gormDB.WithContext(ctx)` for
-GORM. See [SQL profiling](sql-profiling.md) for callsites and EXPLAIN.
+GORM. Plain EXPLAIN is opt-in, bounded by timeout and row count, and never uses
+`EXPLAIN ANALYZE`. See [SQL profiling](sql-profiling.md) for details.
 
 ## HTTP frameworks
 

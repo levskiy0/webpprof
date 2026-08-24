@@ -51,7 +51,7 @@ func (p *Profiler) CaptureQueryCallsite() []SourceFrame {
 
 func supportsCallsite(kind Kind) bool {
 	switch kind {
-	case KindQuery, KindCache, KindEmail, KindJob, KindHTTPCall, KindSchedule:
+	case KindQuery, KindCache, KindEmail, KindJob, KindHTTPCall, KindSchedule, KindCallable, KindTask:
 		return true
 	default:
 		return false
@@ -95,6 +95,13 @@ func isCallsiteInfrastructureFrame(kind Kind, function string) bool {
 		"github.com/levskiy0/webpprof.(*Profiler).CaptureQueryCallsite",
 		"github.com/levskiy0/webpprof.(*Profiler).prepareCallsite",
 		"github.com/levskiy0/webpprof.(*Profiler).prepareQuery",
+		"github.com/levskiy0/webpprof.(*TaskSpan).",
+		"github.com/levskiy0/webpprof.startTask",
+		"github.com/levskiy0/webpprof.StartTask",
+		"github.com/levskiy0/webpprof.measureTask",
+		"github.com/levskiy0/webpprof.MeasureTask",
+		"github.com/levskiy0/webpprof.(*Profiler).StartTask",
+		"github.com/levskiy0/webpprof.(*Profiler).MeasureTask",
 		"github.com/levskiy0/webpprof.(*Profiler).Log",
 		"github.com/levskiy0/webpprof.Log",
 		"github.com/levskiy0/webpprof.withDefault",

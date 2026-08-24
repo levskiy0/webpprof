@@ -6,7 +6,10 @@ import (
 	"context"
 	"database/sql/driver"
 	"errors"
+	"io"
+	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/levskiy0/webpprof"
@@ -52,6 +55,12 @@ type sqlStmtProfiler struct {
 	profiler *webpprof.Profiler
 	config   Config
 	query    string
+}
+
+type sqlRowsProfiler struct {
+	inner  driver.Rows
+	finish func(error)
+	once   sync.Once
 }
 
 // ProfilerSQLConnector implements webpprof.Integration for driver connectors.
@@ -285,8 +294,13 @@ func (c *sqlConnProfiler) Query(query string, args []driver.Value) (driver.Rows,
 	plan := c.explain(context.Background(), query, namedValues(args))
 	startedAt := time.Now().UTC()
 	rows, err := queryer.Query(query, args)
-	c.record(context.Background(), startedAt, query, nil, err, callsite, plan)
-	return rows, err
+	if err != nil || rows == nil {
+		c.record(context.Background(), startedAt, query, nil, err, callsite, plan)
+		return rows, err
+	}
+	return profileSQLRows(rows, func(rowsErr error) {
+		c.record(context.Background(), startedAt, query, nil, rowsErr, callsite, plan)
+	}), nil
 }
 
 func (c *sqlConnProfiler) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
@@ -311,8 +325,13 @@ func (c *sqlConnProfiler) QueryContext(ctx context.Context, query string, args [
 	} else {
 		return nil, driver.ErrSkip
 	}
-	c.record(ctx, startedAt, query, nil, err, callsite, plan)
-	return rows, err
+	if err != nil || rows == nil {
+		c.record(ctx, startedAt, query, nil, err, callsite, plan)
+		return rows, err
+	}
+	return profileSQLRows(rows, func(rowsErr error) {
+		c.record(ctx, startedAt, query, nil, rowsErr, callsite, plan)
+	}), nil
 }
 
 func (c *sqlConnProfiler) Ping(ctx context.Context) error {
@@ -395,8 +414,13 @@ func (s *sqlStmtProfiler) Query(args []driver.Value) (driver.Rows, error) {
 	plan := s.conn.explain(context.Background(), s.query, namedValues(args))
 	startedAt := time.Now().UTC()
 	rows, err := s.inner.Query(args)
-	s.record(context.Background(), startedAt, nil, err, callsite, plan)
-	return rows, err
+	if err != nil || rows == nil {
+		s.record(context.Background(), startedAt, nil, err, callsite, plan)
+		return rows, err
+	}
+	return profileSQLRows(rows, func(rowsErr error) {
+		s.record(context.Background(), startedAt, nil, rowsErr, callsite, plan)
+	}), nil
 }
 
 func (s *sqlStmtProfiler) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
@@ -443,8 +467,102 @@ func (s *sqlStmtProfiler) QueryContext(ctx context.Context, args []driver.NamedV
 		}
 		rows, err = s.inner.Query(values)
 	}
-	s.record(ctx, startedAt, nil, err, callsite, plan)
-	return rows, err
+	if err != nil || rows == nil {
+		s.record(ctx, startedAt, nil, err, callsite, plan)
+		return rows, err
+	}
+	return profileSQLRows(rows, func(rowsErr error) {
+		s.record(ctx, startedAt, nil, rowsErr, callsite, plan)
+	}), nil
+}
+
+func profileSQLRows(rows driver.Rows, finish func(error)) driver.Rows {
+	return &sqlRowsProfiler{inner: rows, finish: finish}
+}
+
+func (r *sqlRowsProfiler) Columns() []string {
+	return r.inner.Columns()
+}
+
+func (r *sqlRowsProfiler) Close() error {
+	err := r.inner.Close()
+	r.finishOnce(err)
+	return err
+}
+
+func (r *sqlRowsProfiler) Next(destination []driver.Value) error {
+	err := r.inner.Next(destination)
+	if err == io.EOF {
+		if rows, ok := r.inner.(driver.RowsNextResultSet); ok && rows.HasNextResultSet() {
+			return err
+		}
+	}
+	if err != nil {
+		r.finishOnce(err)
+	}
+	return err
+}
+
+func (r *sqlRowsProfiler) HasNextResultSet() bool {
+	rows, ok := r.inner.(driver.RowsNextResultSet)
+	return ok && rows.HasNextResultSet()
+}
+
+func (r *sqlRowsProfiler) NextResultSet() error {
+	rows, ok := r.inner.(driver.RowsNextResultSet)
+	if !ok {
+		r.finishOnce(io.EOF)
+		return io.EOF
+	}
+	err := rows.NextResultSet()
+	if err != nil {
+		r.finishOnce(err)
+	}
+	return err
+}
+
+func (r *sqlRowsProfiler) ColumnTypeScanType(index int) reflect.Type {
+	if rows, ok := r.inner.(driver.RowsColumnTypeScanType); ok {
+		return rows.ColumnTypeScanType(index)
+	}
+	return reflect.TypeFor[any]()
+}
+
+func (r *sqlRowsProfiler) ColumnTypeDatabaseTypeName(index int) string {
+	if rows, ok := r.inner.(driver.RowsColumnTypeDatabaseTypeName); ok {
+		return rows.ColumnTypeDatabaseTypeName(index)
+	}
+	return ""
+}
+
+func (r *sqlRowsProfiler) ColumnTypeLength(index int) (int64, bool) {
+	if rows, ok := r.inner.(driver.RowsColumnTypeLength); ok {
+		return rows.ColumnTypeLength(index)
+	}
+	return 0, false
+}
+
+func (r *sqlRowsProfiler) ColumnTypeNullable(index int) (bool, bool) {
+	if rows, ok := r.inner.(driver.RowsColumnTypeNullable); ok {
+		return rows.ColumnTypeNullable(index)
+	}
+	return false, false
+}
+
+func (r *sqlRowsProfiler) ColumnTypePrecisionScale(index int) (int64, int64, bool) {
+	if rows, ok := r.inner.(driver.RowsColumnTypePrecisionScale); ok {
+		return rows.ColumnTypePrecisionScale(index)
+	}
+	return 0, 0, false
+}
+
+func (r *sqlRowsProfiler) finishOnce(err error) {
+	r.once.Do(func() {
+		if err == io.EOF {
+			err = nil
+		}
+		r.finish(err)
+	})
 }
 
 func (s *sqlStmtProfiler) record(ctx context.Context, startedAt time.Time, result driver.Result, err error, callsite []webpprof.SourceFrame, plan *webpprof.QueryPlan) {
@@ -518,6 +636,13 @@ var _ driver.QueryerContext = (*sqlConnProfiler)(nil)
 var _ driver.ConnBeginTx = (*sqlConnProfiler)(nil)
 var _ driver.Pinger = (*sqlConnProfiler)(nil)
 var _ driver.SessionResetter = (*sqlConnProfiler)(nil)
+var _ driver.Rows = (*sqlRowsProfiler)(nil)
+var _ driver.RowsNextResultSet = (*sqlRowsProfiler)(nil)
+var _ driver.RowsColumnTypeScanType = (*sqlRowsProfiler)(nil)
+var _ driver.RowsColumnTypeDatabaseTypeName = (*sqlRowsProfiler)(nil)
+var _ driver.RowsColumnTypeLength = (*sqlRowsProfiler)(nil)
+var _ driver.RowsColumnTypeNullable = (*sqlRowsProfiler)(nil)
+var _ driver.RowsColumnTypePrecisionScale = (*sqlRowsProfiler)(nil)
 var _ driver.Validator = (*sqlConnProfiler)(nil)
 var _ driver.NamedValueChecker = (*sqlConnProfiler)(nil)
 var _ driver.Stmt = (*sqlStmtProfiler)(nil)

@@ -28,6 +28,29 @@ profiler := webpprof.New(
 )
 ```
 
+## Sidebar sections
+
+By default the viewer places standalone execution roots before HTTP requests:
+**Schedules**, **Callables**, **Tasks**, **Requests**, followed by the remaining entity
+sections. Use `WithSidebarKinds` to replace that order or hide sections:
+
+```go
+webpprof.WithSidebarKinds(
+    webpprof.KindCallable,
+    webpprof.KindSchedule,
+    webpprof.KindTask,
+    webpprof.KindRequest,
+    webpprof.KindQuery,
+    webpprof.KindLog,
+)
+```
+
+`Dashboard` always remains first and `All Events` remains last. Passing no
+kinds hides every entity-specific section. This is presentation-only: omitted
+sections are still captured and remain available through **All Events**, direct
+links, the HTTP API, and MCP. Use `WithDisabledKinds` separately when an entity
+must not be recorded.
+
 ## Selective request capture
 
 Rules that need only the incoming `*http.Request` run before capture starts.
@@ -167,6 +190,7 @@ tag or `tag=key=value` to require its exact value.
 | --- | --- |
 | `kind` | Exact event kind. |
 | `request_id` | Request ID, including directly and asynchronously correlated entries. |
+| `scope_id` | One execution root and every transitive `ParentID` descendant; use a Schedule, Callable, or Task ID to retrieve its complete execution tree. |
 | `tag` | Repeatable `key` or `key=value` selector. |
 | `q` | Case-insensitive search over IDs, kind, process, instance, tags, and bounded redacted event data. |
 | `method` | Case-insensitive exact method; matches request entries only. |

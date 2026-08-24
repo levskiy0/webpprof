@@ -36,18 +36,25 @@ func (d ProfilerSchedule) Profile(scope webpprof.Scope, task Task) Task {
 		return task
 	}
 	return func(ctx context.Context) {
+		if !webpprof.RecordingEnabled(ctx) {
+			task(ctx)
+			return
+		}
+		rootCtx := webpprof.WithoutCorrelation(ctx)
+		invocationID := webpprof.NewID()
+		taskCtx := webpprof.WithParentEntry(rootCtx, invocationID)
 		startedAt := time.Now().UTC()
 		defer func() {
-			event := webpprof.Schedule{Meta: webpprof.Meta{StartedAt: startedAt, Duration: time.Since(startedAt)}, Name: d.NameValue, State: "succeeded"}
+			event := webpprof.Schedule{Meta: webpprof.Meta{ID: invocationID, StartedAt: startedAt, Duration: time.Since(startedAt)}, Name: d.NameValue, State: "succeeded"}
 			if recovered := recover(); recovered != nil {
 				event.State = "panicked"
 				event.Panic = fmt.Sprint(recovered)
-				p.LogScheduleContext(ctx, event)
+				p.LogScheduleContext(rootCtx, event)
 				panic(recovered)
 			}
-			p.LogScheduleContext(ctx, event)
+			p.LogScheduleContext(rootCtx, event)
 		}()
-		task(ctx)
+		task(taskCtx)
 	}
 }
 

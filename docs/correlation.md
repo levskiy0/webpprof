@@ -1,4 +1,4 @@
-# Request correlation and automatic findings
+# Execution correlation and automatic findings
 
 webpprof builds related tabs and request timelines from the request capture
 carried by `context.Context`.
@@ -62,6 +62,66 @@ func recordException(ctx context.Context, err error) {
 
 HTTP and Gin middleware record recovered panics as related exceptions with a
 stack trace, then propagate the panic as before.
+
+## Standalone Schedule, Callable, and Task executions
+
+Each profiled Schedule invocation is its own execution root. The wrapper passes
+a context whose parent entry is the Schedule ID into the task, so every
+context-aware query, log, cache operation, outgoing HTTP call, exception, or
+custom event becomes part of that Schedule's execution tree.
+
+```go
+refresh := webpprofschedule.ProfileWith(profiler, "players.refresh", func(ctx context.Context) {
+    players, err := repository.List(ctx)
+    if err != nil {
+        logger.ErrorContext(ctx, "scheduled refresh failed", "error", err)
+        return
+    }
+    logger.InfoContext(ctx, "scheduled refresh completed", "count", len(players))
+})
+
+refresh(context.Background())
+```
+
+Open the Schedule entry in the UI to inspect its Findings, Queries, Logs, HTTP
+Client, Cache, Events, and Timeline tabs. The events API exposes the same
+hierarchy as `?scope_id=<schedule-id>`, while the analyzer is available at
+`/api/schedules/<schedule-id>/analysis`.
+
+Use Callable for an explicitly invoked custom command whose semantics are
+neither an HTTP request nor a cron task:
+
+```go
+reindex := webpprofcallable.ProfileWith(profiler, "players.reindex", func(ctx context.Context) error {
+    if err := repository.Reindex(ctx); err != nil {
+        return err
+    }
+    logger.InfoContext(ctx, "player index rebuilt")
+    return nil
+})
+```
+
+Callable is also a standalone root, even when invoked by an HTTP handler. Its
+analysis is available through `AnalyzeCallable` and
+`/api/callables/<callable-id>/analysis`.
+
+Use Task to measure a long-running application operation that is not naturally
+a request, cron invocation, or command:
+
+```go
+measurement := profiler.MeasureTask(ctx, webpprof.Task{
+    Name:   "reports.players.generate",
+    Fields: map[string]any{"format": "pdf"},
+}, func(taskCtx context.Context) error {
+    return reports.Generate(taskCtx)
+})
+```
+
+Task is a standalone root as well. Pass `taskCtx` to SQL, logging, cache, and
+HTTP integrations; inspect the result through `AnalyzeTask`,
+`/api/tasks/<task-id>/analysis`, or `?scope_id=<task-id>`. Use `StartTask` with
+`Finish` or `FinishResult` when the measured lifecycle crosses function
+boundaries.
 
 | Integration or API | How to preserve correlation |
 | --- | --- |
@@ -136,21 +196,28 @@ downstream handlers it invokes. Panicking middleware is recorded with state
 
 ## Automatic findings
 
-The Go analyzer derives findings from the complete request timeline. Current
-rules detect:
+The Go analyzer derives findings from the complete Request, Schedule, Callable, or Task
+execution timeline. Current rules detect:
 
-- a query fingerprint repeated at least three times as a possible N+1;
-- SQL covering at least 50% of effective request wall-clock time, counting
+- a read-query fingerprint repeated at least three times from the same parent
+  operation or callsite, connection, and database as a possible N+1;
+- SQL covering at least 50% of effective execution wall-clock time, counting
   overlapping queries once;
 - at least three successful, non-overlapping `GET`, `HEAD`, or `OPTIONS` calls
   to one HTTP host;
 - a cache read miss followed within 100 ms by at least three identical queries;
-- named middleware with inclusive duration of at least 100 ms.
+- named middleware with inclusive duration of at least 100 ms;
+- measured custom events lasting at least 500 ms and a child operation that
+  accounts for at least half of an execution;
+- conservative normalized concerns from a stored plain EXPLAIN plan, including
+  full scans, temporary sorts, and large row estimates. Full scans and sorts
+  are surfaced only for queries that are already slow.
 
-It also reports direct slow requests, queries, and HTTP calls; failed jobs,
-mail, and HTTP calls; and a high cache miss rate when no richer pattern applies.
-Miss rate considers only successful reads and requires at least five samples.
-Writes and cache errors are excluded.
+It also reports direct slow requests, schedules, callables, or tasks, queries, and HTTP
+calls; failed requests, queries, cache operations, events, middleware,
+exceptions, execution roots, jobs, mail, and HTTP calls; and a high cache miss
+rate when no richer pattern applies. Miss rate considers only successful reads
+and requires at least five samples. Writes and cache errors are excluded.
 
 Work related only through `OriginRequestID` remains visible but is not charged
 to the originating HTTP request's latency or findings.
@@ -165,12 +232,27 @@ if ok {
         log.Printf("%s: %s", finding.Code, finding.Title)
     }
 }
+
+if scheduleAnalysis, ok := profiler.AnalyzeSchedule(scheduleID); ok {
+    log.Printf("schedule findings: %d", len(scheduleAnalysis.Findings))
+}
+
+if callableAnalysis, ok := profiler.AnalyzeCallable(callableID); ok {
+    log.Printf("callable findings: %d", len(callableAnalysis.Findings))
+}
+
+if taskAnalysis, ok := profiler.AnalyzeTask(taskID); ok {
+    log.Printf("task findings: %d", len(taskAnalysis.Findings))
+}
 ```
 
-The authenticated HTTP endpoint is:
+The authenticated HTTP endpoints are:
 
 ```text
 GET /debug/webpprof/api/requests/{request-id}/analysis
+GET /debug/webpprof/api/schedules/{schedule-id}/analysis
+GET /debug/webpprof/api/callables/{callable-id}/analysis
+GET /debug/webpprof/api/tasks/{task-id}/analysis
 ```
 
 ## Custom request adapters

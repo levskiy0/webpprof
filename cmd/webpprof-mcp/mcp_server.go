@@ -7,7 +7,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const serverInstructions = "Use webpprof to inspect captured requests from the running Go application. Start with webpprof_status or webpprof_list_requests, then inspect a request by ID. All tools are read-only. Captured payloads and stacks are omitted unless include_payloads is explicitly enabled."
+const serverInstructions = "Use webpprof to inspect captured requests and standalone executions from the running Go application. Start with webpprof_status, webpprof_list_requests, or webpprof_search_events, then inspect a request or event by ID. All tools are read-only. Captured payloads and stacks are omitted unless include_payloads is explicitly enabled."
 
 func newServer(service *mcpserver.Service, releaseVersion string) *mcp.Server {
 	if releaseVersion == "" {
@@ -31,7 +31,11 @@ func newServer(service *mcpserver.Service, releaseVersion string) *mcp.Server {
 		output, err := service.InspectRequest(ctx, input)
 		return nil, output, err
 	})
-	mcp.AddTool(server, &mcp.Tool{Name: "webpprof_search_events", Title: "Search captured events", Description: "Search bounded profiler events by text, kind, request ID, tags, and cursor. Returns compact summaries without payload bodies.", Annotations: annotations}, func(ctx context.Context, _ *mcp.CallToolRequest, input mcpserver.SearchEventsInput) (*mcp.CallToolResult, mcpserver.SearchEventsOutput, error) {
+	mcp.AddTool(server, &mcp.Tool{Name: "webpprof_inspect_event", Title: "Inspect execution event", Description: "Return one standalone execution root, such as a schedule, callable, or task, with automatic findings, event counts, and its bounded ParentID hierarchy. Payloads and stacks are omitted by default.", Annotations: annotations}, func(ctx context.Context, _ *mcp.CallToolRequest, input mcpserver.InspectEventInput) (*mcp.CallToolResult, mcpserver.InspectEventOutput, error) {
+		output, err := service.InspectEvent(ctx, input)
+		return nil, output, err
+	})
+	mcp.AddTool(server, &mcp.Tool{Name: "webpprof_search_events", Title: "Search captured events", Description: "Search bounded profiler events by text, kind, request ID, execution scope, tags, and cursor. Returns compact summaries without payload bodies.", Annotations: annotations}, func(ctx context.Context, _ *mcp.CallToolRequest, input mcpserver.SearchEventsInput) (*mcp.CallToolResult, mcpserver.SearchEventsOutput, error) {
 		output, err := service.SearchEvents(ctx, input)
 		return nil, output, err
 	})

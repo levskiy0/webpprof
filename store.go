@@ -48,6 +48,7 @@ type entryStore struct {
 	bodyLimit      int64
 	requestSample  float64
 	disabledKinds  []Kind
+	sidebarKinds   []Kind
 	storageMu      sync.Mutex
 	storageCond    *sync.Cond
 	storageIssued  uint64
@@ -85,6 +86,7 @@ func newEntryStore(c config) *entryStore {
 		bodyLimit:     c.bodyLimit,
 		requestSample: c.requestSample,
 		disabledKinds: disabledKinds,
+		sidebarKinds:  slices.Clone(c.sidebarKinds),
 	}
 	store.storageCond = sync.NewCond(&store.storageMu)
 	store.openStorage()
@@ -142,6 +144,7 @@ func (s *entryStore) listBefore(kind Kind, requestID string, tags []string, afte
 type eventFilters struct {
 	Kind          Kind
 	RequestID     string
+	ScopeID       string
 	Tags          []string
 	Query         string
 	Method        string
@@ -159,6 +162,7 @@ func (s *entryStore) listBeforeFiltered(filters eventFilters, limit int) ([]Entr
 	if limit <= 0 || limit > 1_001 {
 		limit = 200
 	}
+	scope := s.scopeIDsLocked(filters.ScopeID)
 	result := make([]Entry, 0, min(limit, s.order.len()))
 	scanned := 0
 	for index := s.order.len() - 1; index >= 0 && len(result) < limit; index-- {
@@ -170,6 +174,11 @@ func (s *entryStore) listBeforeFiltered(filters eventFilters, limit int) ([]Entr
 			continue
 		}
 		scanned++
+		if scope != nil {
+			if _, ok := scope[entry.ID]; !ok {
+				continue
+			}
+		}
 		if !matchesEventFilters(entry, filters) {
 			continue
 		}
@@ -180,6 +189,33 @@ func (s *entryStore) listBeforeFiltered(filters eventFilters, limit int) ([]Entr
 	s.mu.Unlock()
 	s.persist(batch)
 	return result, scanned
+}
+
+func (s *entryStore) scopeIDsLocked(rootID string) map[string]struct{} {
+	rootID = strings.TrimSpace(rootID)
+	if rootID == "" {
+		return nil
+	}
+	children := make(map[string][]string)
+	for _, entry := range s.entries {
+		if entry.ParentID != "" && entry.ID != entry.ParentID {
+			children[entry.ParentID] = append(children[entry.ParentID], entry.ID)
+		}
+	}
+	ids := map[string]struct{}{rootID: {}}
+	stack := []string{rootID}
+	for len(stack) > 0 {
+		parentID := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for _, childID := range children[parentID] {
+			if _, visited := ids[childID]; visited {
+				continue
+			}
+			ids[childID] = struct{}{}
+			stack = append(stack, childID)
+		}
+	}
+	return ids
 }
 
 func matchesEventFilters(entry Entry, filters eventFilters) bool {
@@ -295,6 +331,31 @@ func (s *entryStore) requestEntries(requestID string) (Entry, []Entry, bool) {
 	return result, entries, true
 }
 
+func (s *entryStore) scopeEntries(rootID string) (Entry, []Entry, bool) {
+	s.mu.Lock()
+	records := s.purgeExpiredLocked(time.Now())
+	root, ok := s.entries[rootID]
+	if !ok {
+		batch := s.storageBatchLocked(records)
+		s.mu.Unlock()
+		s.persist(batch)
+		return Entry{}, nil, false
+	}
+	ids := s.scopeIDsLocked(rootID)
+	entries := make([]Entry, 0, len(ids))
+	for index := 0; index < s.order.len(); index++ {
+		entry := s.entries[s.order.at(index)]
+		if _, included := ids[entry.ID]; included {
+			entries = append(entries, cloneEntry(entry))
+		}
+	}
+	result := cloneEntry(root)
+	batch := s.storageBatchLocked(records)
+	s.mu.Unlock()
+	s.persist(batch)
+	return result, entries, true
+}
+
 func (s *entryStore) clear() {
 	s.mu.Lock()
 	s.entries = make(map[string]Entry)
@@ -311,7 +372,7 @@ func (s *entryStore) stats() Stats {
 	s.mu.Lock()
 	records := s.purgeExpiredLocked(time.Now())
 	storage := string(s.storageKind)
-	stats := Stats{Events: len(s.entries), Bytes: s.bytes, DroppedEvents: s.dropped, EvictedEvents: s.evicted, Subscribers: len(s.subscribers), Cursor: s.nextCursor, MaxEvents: s.maxEvents, MaxBytes: s.maxBytes, RetentionNS: int64(s.retention), Storage: storage, StorageError: s.storageError, BodyLimit: s.bodyLimit, SampleRate: s.requestSample, DisabledKinds: slices.Clone(s.disabledKinds)}
+	stats := Stats{Events: len(s.entries), Bytes: s.bytes, DroppedEvents: s.dropped, EvictedEvents: s.evicted, Subscribers: len(s.subscribers), Cursor: s.nextCursor, MaxEvents: s.maxEvents, MaxBytes: s.maxBytes, RetentionNS: int64(s.retention), Storage: storage, StorageError: s.storageError, BodyLimit: s.bodyLimit, SampleRate: s.requestSample, DisabledKinds: slices.Clone(s.disabledKinds), SidebarKinds: slices.Clone(s.sidebarKinds)}
 	batch := s.storageBatchLocked(records)
 	s.mu.Unlock()
 	s.persist(batch)

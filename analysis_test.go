@@ -124,6 +124,240 @@ func TestAnalyzeRequestAvoidsWeakSignals(t *testing.T) {
 	}
 }
 
+func TestAnalyzeScheduleProducesExecutionFindings(t *testing.T) {
+	profiler := newProfiler()
+	t.Cleanup(func() { _ = profiler.Close() })
+	startedAt := time.Date(2026, time.August, 24, 10, 0, 0, 0, time.UTC)
+	profiler.LogSchedule(Schedule{
+		Meta:  Meta{ID: "schedule-analysis", StartedAt: startedAt, Duration: time.Second},
+		Name:  "players.refresh",
+		State: "failed",
+		Error: "refresh failed",
+	})
+	for index := range 3 {
+		profiler.LogQuery(Query{
+			Meta: Meta{
+				ID:        fmt.Sprintf("schedule-query-%d", index),
+				ParentID:  "schedule-analysis",
+				StartedAt: startedAt.Add(time.Duration(index) * 200 * time.Millisecond),
+				Duration:  200 * time.Millisecond,
+			},
+			SQL: fmt.Sprintf("SELECT name FROM players WHERE id = %d", index+1),
+		})
+	}
+
+	analysis, ok := profiler.AnalyzeSchedule("schedule-analysis")
+	if !ok {
+		t.Fatal("AnalyzeSchedule() did not find retained schedule")
+	}
+	if analysis.ScheduleID != "schedule-analysis" || analysis.ScheduleDurationNS != int64(time.Second) {
+		t.Fatalf("schedule analysis metadata = %+v", analysis)
+	}
+	want := map[FindingCode]bool{
+		FindingPossibleNPlusOne:     false,
+		FindingSQLDominatesSchedule: false,
+		FindingSlowSchedule:         false,
+		FindingSlowQuery:            false,
+		FindingFailedOperation:      false,
+	}
+	for _, finding := range analysis.Findings {
+		if _, expected := want[finding.Code]; expected {
+			want[finding.Code] = true
+		}
+	}
+	for code, found := range want {
+		if !found {
+			t.Errorf("missing schedule finding %q: %+v", code, analysis.Findings)
+		}
+	}
+	for _, finding := range analysis.Findings {
+		if finding.Code == FindingSQLDominatesSchedule && finding.Title != "SQL consumed 60% of schedule" {
+			t.Errorf("SQL schedule title = %q", finding.Title)
+		}
+	}
+}
+
+func TestAnalyzeScheduleRejectsOtherRoots(t *testing.T) {
+	profiler := newProfiler()
+	t.Cleanup(func() { _ = profiler.Close() })
+	profiler.LogEvent(Event{Meta: Meta{ID: "not-schedule"}, Kind: "handler", Name: "refresh"})
+	if _, ok := profiler.AnalyzeSchedule("not-schedule"); ok {
+		t.Fatal("AnalyzeSchedule() accepted a non-schedule root")
+	}
+	if _, ok := profiler.AnalyzeSchedule("missing"); ok {
+		t.Fatal("AnalyzeSchedule() accepted a missing root")
+	}
+}
+
+func TestAnalyzeScheduleOnlyUsesParentIDDescendants(t *testing.T) {
+	profiler := newProfiler()
+	t.Cleanup(func() { _ = profiler.Close() })
+	startedAt := time.Now().UTC()
+	profiler.LogSchedule(Schedule{Meta: Meta{ID: "schedule", StartedAt: startedAt, Duration: 100 * time.Millisecond}, Name: "refresh", State: "succeeded"})
+	profiler.LogQuery(Query{Meta: Meta{ID: "unrelated-slow-query", StartedAt: startedAt, Duration: time.Second}, SQL: "SELECT * FROM unrelated"})
+
+	analysis, ok := profiler.AnalyzeSchedule("schedule")
+	if !ok {
+		t.Fatal("AnalyzeSchedule() did not find retained schedule")
+	}
+	if len(analysis.Findings) != 0 {
+		t.Fatalf("unrelated work produced schedule findings: %+v", analysis.Findings)
+	}
+}
+
+func TestAnalyzeCallableProducesExecutionFindings(t *testing.T) {
+	profiler := newProfiler()
+	t.Cleanup(func() { _ = profiler.Close() })
+	startedAt := time.Date(2026, time.August, 24, 11, 0, 0, 0, time.UTC)
+	profiler.LogCallable(Callable{
+		Meta:  Meta{ID: "callable-analysis", StartedAt: startedAt, Duration: time.Second},
+		Name:  "search.rebuild",
+		State: "failed",
+		Error: "rebuild failed",
+	})
+	for index := range 3 {
+		profiler.LogQuery(Query{
+			Meta: Meta{ID: fmt.Sprintf("callable-query-%d", index), ParentID: "callable-analysis", StartedAt: startedAt.Add(time.Duration(index) * 200 * time.Millisecond), Duration: 200 * time.Millisecond},
+			SQL:  fmt.Sprintf("SELECT name FROM players WHERE id = %d", index+1),
+		})
+	}
+
+	analysis, ok := profiler.AnalyzeCallable("callable-analysis")
+	if !ok {
+		t.Fatal("AnalyzeCallable() did not find retained callable")
+	}
+	if analysis.CallableID != "callable-analysis" || analysis.CallableDurationNS != int64(time.Second) {
+		t.Fatalf("callable analysis metadata = %+v", analysis)
+	}
+	want := map[FindingCode]bool{
+		FindingPossibleNPlusOne:     false,
+		FindingSQLDominatesCallable: false,
+		FindingSlowCallable:         false,
+		FindingSlowQuery:            false,
+		FindingFailedOperation:      false,
+	}
+	for _, finding := range analysis.Findings {
+		if _, expected := want[finding.Code]; expected {
+			want[finding.Code] = true
+		}
+	}
+	for code, found := range want {
+		if !found {
+			t.Errorf("missing callable finding %q: %+v", code, analysis.Findings)
+		}
+	}
+}
+
+func TestAnalyzeTaskProducesExecutionFindings(t *testing.T) {
+	profiler := newProfiler()
+	t.Cleanup(func() { _ = profiler.Close() })
+	startedAt := time.Date(2026, time.August, 24, 12, 0, 0, 0, time.UTC)
+	profiler.LogTask(Task{Meta: Meta{ID: "task-analysis", StartedAt: startedAt, Duration: 2 * time.Second}, Name: "reports.generate", State: "failed", Error: "render failed"})
+	for index := range 3 {
+		profiler.LogQuery(Query{Meta: Meta{ID: fmt.Sprintf("task-query-%d", index), ParentID: "task-analysis", StartedAt: startedAt.Add(time.Duration(index) * 400 * time.Millisecond), Duration: 400 * time.Millisecond}, SQL: fmt.Sprintf("SELECT value FROM report_rows WHERE id = %d", index+1)})
+	}
+
+	analysis, ok := profiler.AnalyzeTask("task-analysis")
+	if !ok || analysis.TaskID != "task-analysis" || analysis.TaskDurationNS != int64(2*time.Second) {
+		t.Fatalf("task analysis = %+v, ok=%v", analysis, ok)
+	}
+	want := map[FindingCode]bool{FindingPossibleNPlusOne: false, FindingSQLDominatesTask: false, FindingSlowTask: false, FindingSlowQuery: false, FindingFailedOperation: false}
+	for _, finding := range analysis.Findings {
+		if _, expected := want[finding.Code]; expected {
+			want[finding.Code] = true
+		}
+	}
+	for code, found := range want {
+		if !found {
+			t.Errorf("missing task finding %q: %+v", code, analysis.Findings)
+		}
+	}
+}
+
+func TestAnalyzeTaskFindsMeasuredEventBottleneckAndPlanIssue(t *testing.T) {
+	profiler := newProfiler()
+	t.Cleanup(func() { _ = profiler.Close() })
+	startedAt := time.Date(2026, time.August, 24, 13, 0, 0, 0, time.UTC)
+	profiler.LogTask(Task{Meta: Meta{ID: "task-plan", StartedAt: startedAt, Duration: 1200 * time.Millisecond}, Name: "reports.generate", State: "succeeded"})
+	profiler.LogEvent(Event{Meta: Meta{ID: "render", ParentID: "task-plan", StartedAt: startedAt.Add(50 * time.Millisecond), Duration: time.Second}, Kind: "step", Name: "reports.render"})
+	profiler.LogQuery(Query{
+		Meta:   Meta{ID: "slow-plan", ParentID: "render", StartedAt: startedAt.Add(100 * time.Millisecond), Duration: 150 * time.Millisecond},
+		Driver: "sqlite",
+		SQL:    "SELECT * FROM players ORDER BY created_at",
+		Plan:   &QueryPlan{Text: "id=2 parent=0 detail=SCAN players"},
+	})
+
+	analysis, ok := profiler.AnalyzeTask("task-plan")
+	if !ok {
+		t.Fatal("AnalyzeTask() did not find retained task")
+	}
+	want := map[FindingCode]bool{
+		FindingSlowEvent:           false,
+		FindingExecutionBottleneck: false,
+		FindingQueryPlanIssue:      false,
+	}
+	for _, finding := range analysis.Findings {
+		if _, expected := want[finding.Code]; expected {
+			want[finding.Code] = true
+		}
+		if finding.Code == FindingExecutionBottleneck && finding.EntryID != "render" {
+			t.Errorf("bottleneck points to %q, want render", finding.EntryID)
+		}
+	}
+	for code, found := range want {
+		if !found {
+			t.Errorf("missing finding %q: %+v", code, analysis.Findings)
+		}
+	}
+}
+
+func TestAnalyzeExecutionReportsFailedCoreOperations(t *testing.T) {
+	profiler := newProfiler()
+	t.Cleanup(func() { _ = profiler.Close() })
+	startedAt := time.Now().UTC()
+	profiler.LogRequest(Request{
+		Meta:        Meta{ID: "failed-request", StartedAt: startedAt, Duration: 20 * time.Millisecond},
+		Method:      http.MethodGet,
+		Path:        "/players",
+		Status:      http.StatusInternalServerError,
+		Queries:     []Query{{Meta: Meta{ID: "failed-query", StartedAt: startedAt}, SQL: "SELECT 1", Error: "database closed"}},
+		Cache:       []Cache{{Meta: Meta{ID: "failed-cache", StartedAt: startedAt}, Operation: "get", Key: "players", Error: "timeout"}},
+		Events:      []Event{{Meta: Meta{ID: "failed-event", StartedAt: startedAt}, Kind: "step", Name: "load", Status: "failed"}},
+		Middlewares: []Middleware{{Meta: Meta{ID: "failed-middleware", StartedAt: startedAt}, Name: "auth", Error: "denied"}},
+		Exceptions:  []Exception{{Meta: Meta{ID: "exception", StartedAt: startedAt}, Type: "panic", Message: "boom"}},
+	})
+
+	analysis, ok := profiler.AnalyzeRequest("failed-request")
+	if !ok {
+		t.Fatal("AnalyzeRequest() did not find retained request")
+	}
+	ids := make(map[string]bool)
+	for _, finding := range analysis.Findings {
+		if finding.Code == FindingFailedOperation {
+			ids[finding.EntryID] = true
+		}
+	}
+	for _, id := range []string{"failed-request", "failed-query", "failed-cache", "failed-event", "failed-middleware", "exception"} {
+		if !ids[id] {
+			t.Errorf("missing failed-operation finding for %s: %+v", id, analysis.Findings)
+		}
+	}
+}
+
+func TestNPlusOneRequiresSameReadLocality(t *testing.T) {
+	queries := []analyzedQuery{
+		{entry: Entry{ID: "select-1", ParentID: "load-a"}, query: Query{SQL: "SELECT id FROM players WHERE id = 1"}, fingerprint: queryFingerprint("SELECT id FROM players WHERE id = 1")},
+		{entry: Entry{ID: "select-2", ParentID: "load-a"}, query: Query{SQL: "SELECT id FROM players WHERE id = 2"}, fingerprint: queryFingerprint("SELECT id FROM players WHERE id = 2")},
+		{entry: Entry{ID: "select-3", ParentID: "load-b"}, query: Query{SQL: "SELECT id FROM players WHERE id = 3"}, fingerprint: queryFingerprint("SELECT id FROM players WHERE id = 3")},
+		{entry: Entry{ID: "update-1", ParentID: "load-a"}, query: Query{SQL: "UPDATE players SET active = 1 WHERE id = 1"}, fingerprint: queryFingerprint("UPDATE players SET active = 1 WHERE id = 1")},
+		{entry: Entry{ID: "update-2", ParentID: "load-a"}, query: Query{SQL: "UPDATE players SET active = 1 WHERE id = 2"}, fingerprint: queryFingerprint("UPDATE players SET active = 1 WHERE id = 2")},
+		{entry: Entry{ID: "update-3", ParentID: "load-a"}, query: Query{SQL: "UPDATE players SET active = 1 WHERE id = 3"}, fingerprint: queryFingerprint("UPDATE players SET active = 1 WHERE id = 3")},
+	}
+	if findings := nPlusOneFindings(queries, nil); len(findings) != 0 {
+		t.Fatalf("unrelated branches or writes produced N+1 findings: %+v", findings)
+	}
+}
+
 func TestAnalyzeRequestCacheFindingsRequireEnoughRelatedEvidence(t *testing.T) {
 	startedAt := time.Date(2026, time.August, 23, 5, 0, 0, 0, time.UTC)
 	query := func(id string, offset time.Duration) Query {
@@ -353,5 +587,59 @@ func TestRequestAnalysisEndpoint(t *testing.T) {
 	profiler.handler().ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/api/requests/missing/analysis", nil))
 	if missing.Code != http.StatusNotFound {
 		t.Fatalf("missing analysis status = %d, want %d", missing.Code, http.StatusNotFound)
+	}
+}
+
+func TestScheduleAnalysisEndpoint(t *testing.T) {
+	profiler := newProfiler(WithUnsafeUnauthenticatedAccess())
+	t.Cleanup(func() { _ = profiler.Close() })
+	profiler.LogSchedule(Schedule{Meta: Meta{ID: "schedule-endpoint", StartedAt: time.Now().UTC(), Duration: time.Second}, Name: "refresh", State: "succeeded"})
+
+	response := httptest.NewRecorder()
+	profiler.handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/schedules/schedule-endpoint/analysis", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("analysis status = %d, want %d", response.Code, http.StatusOK)
+	}
+	if !strings.Contains(response.Body.String(), `"schedule_id":"schedule-endpoint"`) || !strings.Contains(response.Body.String(), `"slow_schedule"`) {
+		t.Fatalf("analysis response = %s", response.Body.String())
+	}
+
+	missing := httptest.NewRecorder()
+	profiler.handler().ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/api/schedules/missing/analysis", nil))
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing analysis status = %d, want %d", missing.Code, http.StatusNotFound)
+	}
+}
+
+func TestCallableAnalysisEndpoint(t *testing.T) {
+	profiler := newProfiler(WithUnsafeUnauthenticatedAccess())
+	t.Cleanup(func() { _ = profiler.Close() })
+	profiler.LogCallable(Callable{Meta: Meta{ID: "callable-endpoint", StartedAt: time.Now().UTC(), Duration: time.Second}, Name: "rebuild", State: "succeeded"})
+
+	response := httptest.NewRecorder()
+	profiler.handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/callables/callable-endpoint/analysis", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("analysis status = %d, want %d", response.Code, http.StatusOK)
+	}
+	if !strings.Contains(response.Body.String(), `"callable_id":"callable-endpoint"`) || !strings.Contains(response.Body.String(), `"slow_callable"`) {
+		t.Fatalf("analysis response = %s", response.Body.String())
+	}
+
+	missing := httptest.NewRecorder()
+	profiler.handler().ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/api/callables/missing/analysis", nil))
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing analysis status = %d, want %d", missing.Code, http.StatusNotFound)
+	}
+}
+
+func TestTaskAnalysisEndpoint(t *testing.T) {
+	mux := http.NewServeMux()
+	profiler := New(mux, WithUnsafeUnauthenticatedAccess())
+	t.Cleanup(func() { _ = profiler.Close() })
+	profiler.LogTask(Task{Meta: Meta{ID: "task-endpoint", StartedAt: time.Now().UTC(), Duration: 2 * time.Second}, Name: "report", State: "succeeded"})
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/debug/webpprof/api/tasks/task-endpoint/analysis", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"task_id":"task-endpoint"`) || !strings.Contains(response.Body.String(), `"slow_task"`) {
+		t.Fatalf("task analysis response = %d %s", response.Code, response.Body.String())
 	}
 }

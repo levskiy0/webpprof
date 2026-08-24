@@ -1,0 +1,10 @@
+interface:
+  display_name: "Debug Go with webpprof"
+  short_description: "Audit Go API behavior with webpprof evidence"
+  default_prompt: "Use $debug-go-with-webpprof to audit this Go API, including its data flow, runtime cost, and whether its caching strategy is justified and correct."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "webpprof"
+      description: "Read-only diagnostic access to a running webpprof instance"

@@ -1,7 +1,8 @@
 # Event and entity reference
 
-All loggable entities can be recorded manually. Context-aware forms attach the
-event to the current request; focused profiler packages record the same
+All loggable entities can be recorded manually. Request-scoped context forms
+attach the event to the current request; Schedule, Callable, and Task context forms
+instead create standalone roots. Focused profiler packages record the same
 contracts automatically.
 
 ## What is recorded
@@ -17,6 +18,8 @@ contracts automatically.
 | Mail | `LogEmailContext` | email, go-mail | Transport, recipients, subject, state, duration, error |
 | Outgoing HTTP | `LogHTTPCallContext` | `http` | Method, URL, headers, status, size, duration, error |
 | Schedule | `LogScheduleContext` | schedule | Name, planned time, state, payload, duration, error or panic |
+| Callable | `LogCallableContext` | callable | Custom command name, state, payload/result, duration, error or panic |
+| Task | `LogTaskContext`, `StartTask`, `MeasureTask` | — | Application operation name, state, fields, duration, error or panic |
 | Exception | `LogExceptionContext` | HTTP/Gin panic recovery | Type, message, stack |
 | Custom event | `LogEventContext`, `StartEvent`, `Measure` | — | Kind, name, status, summary, fields, error |
 
@@ -44,7 +47,7 @@ than runtime validation.
 | Field | Contract |
 | --- | --- |
 | `ID` | Unique entity ID; generated when empty. |
-| `RequestID` | Related request ID; `Log*Context` fills it from the request capture. |
+| `RequestID` | Related request ID; request-scoped `Log*Context` APIs fill it from the request capture. Schedule, Callable, and Task remain roots. |
 | `ParentID` | Optional immediate parent operation. |
 | `OriginRequestID` | Optional originating request across a background or distributed boundary. |
 | `Process` / `Instance` | Optional worker, service, or instance identity. |
@@ -76,9 +79,11 @@ Choose the form based on profiler and request ownership:
 | `p.LogQuery(entity)` | Keep an explicit `*Profiler` for a standalone entity. |
 | `p.LogQueryContext(ctx, entity)` | Keep an explicit profiler and inherit request correlation. |
 
-Replace `Query` with any supported entity type. Package functions are safe
-no-ops before a default profiler is configured. Context-aware calls are also
-no-ops when the context is wrapped with `webpprof.WithoutRecording(ctx)`.
+Replace `Query` with another request-scoped entity type. Schedule, Callable, and Task
+context APIs intentionally remove request and parent correlation while keeping
+tags and application context values. Package functions are safe no-ops before a
+default profiler is configured. Context-aware calls are also no-ops when the
+context is wrapped with `webpprof.WithoutRecording(ctx)`.
 
 ## Measuring custom operations
 
@@ -131,6 +136,23 @@ measurement := span.FinishResult(webpprof.EventResult{
 disabled, but do not create an Event when there is no profiler or the context
 uses `WithoutRecording`.
 
+Use `MeasureTask` for a standalone, first-class application operation rather
+than an Event nested into the current request. Its callback context makes every
+context-aware child entry a descendant of the Task:
+
+```go
+measurement := profiler.MeasureTask(ctx, webpprof.Task{
+    Name:   "reports.players.generate",
+    Fields: map[string]any{"format": "pdf"},
+}, func(taskCtx context.Context) error {
+    return reports.Generate(taskCtx)
+})
+```
+
+`StartTask` plus `Finish` or `FinishResult` provides the corresponding manual
+lifecycle. Task errors and panics are recorded before being returned or
+re-panicked.
+
 ## Entity fields
 
 | Entity | Logging API | Primary fields | Useful optional fields |
@@ -143,6 +165,8 @@ uses `WithoutRecording`.
 | `Log` | `LogLog`, `LogLogContext` | `Message` | Level, fields, stack |
 | `HTTPCall` | `LogHTTPCall`, `LogHTTPCallContext` | `Method`, `URL` | Status, request/response, size, callsite, error |
 | `Schedule` | `LogSchedule`, `LogScheduleContext` | `Name`, `State` | Planned time, payload, callsite, error, panic |
+| `Callable` | `LogCallable`, `LogCallableContext` | `Name`, `State` | Payload, result, callsite, error, panic |
+| `Task` | `LogTask`, `LogTaskContext`, `StartTask`, `MeasureTask` | `Name`, `State` | Fields, callsite, error, panic |
 | `Exception` | `LogException`, `LogExceptionContext` | `Message` | Type, stack; use `PanicException(recovered)` for panics |
 | `Event` | `LogEvent`, `LogEventContext`, `StartEvent`, `Measure` | `Kind`, `Name` | Status, summary, fields, error |
 | `Middleware` | `LogMiddleware`, `LogMiddlewareContext` | `Name`, `State` | Inclusive duration, error |
@@ -159,7 +183,8 @@ stable within an integration, for example `dispatched`, `succeeded`, and
 | `Address` | Optional display name and primary email; used by mail addresses. |
 | `Argument` | Optional name, type, rendered value, original size, and truncation flag. |
 | `SourceFrame` | Function, file, line, and optional editor/source-browser URL. |
-| `QueryPlan` | Plain EXPLAIN command, format, text, lookup duration, and plan-only error. |
+| `QueryPlan` | Plain EXPLAIN command, format, text, lookup duration, normalized issues, and plan-only error. |
+| `QueryPlanIssue` | Stable issue code plus optional relation, estimated rows, and supporting plan fragment. |
 
 Durations serialize as nanoseconds (`duration_ns`, `ttl_ns`, and `wait_ns`).
 `Query.RowsAffected` is a pointer so an actual zero differs from an unknown

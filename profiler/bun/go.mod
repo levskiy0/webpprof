@@ -3,7 +3,7 @@ module github.com/levskiy0/webpprof/profiler/bun
 go 1.25.13
 
 require (
-	github.com/levskiy0/webpprof v0.3.1
+	github.com/levskiy0/webpprof v0.5.0
 	github.com/uptrace/bun v1.2.18
 	github.com/uptrace/bun/dialect/sqlitedialect v1.2.18
 	github.com/uptrace/bun/driver/sqliteshim v1.2.18

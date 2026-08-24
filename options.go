@@ -75,7 +75,24 @@ type config struct {
 	requestLimit     int64
 	disabledKinds    map[Kind]struct{}
 	callsiteKinds    map[Kind]struct{}
+	sidebarKinds     []Kind
 	sourceLink       SourceLinkFunc
+}
+
+var defaultSidebarKinds = []Kind{
+	KindSchedule,
+	KindCallable,
+	KindTask,
+	KindRequest,
+	KindMiddleware,
+	KindQuery,
+	KindCache,
+	KindJob,
+	KindEmail,
+	KindLog,
+	KindHTTPCall,
+	KindException,
+	KindEvent,
 }
 
 // WithStoragePath persists captured entries in an append-only journal. The
@@ -128,6 +145,7 @@ func defaultConfig() config {
 		requestLimit:     -1,
 		disabledKinds:    make(map[Kind]struct{}),
 		callsiteKinds:    map[Kind]struct{}{KindQuery: {}},
+		sidebarKinds:     append([]Kind(nil), defaultSidebarKinds...),
 	}
 }
 
@@ -150,7 +168,8 @@ func WithQueryCallsite(enabled bool) Option {
 
 // WithCallsiteKinds replaces the set of entity kinds whose Go callsites are
 // captured automatically. Passing no kinds disables automatic capture. The
-// supported kinds are Query, Cache, Email, Job, HTTPCall, and Schedule.
+// supported kinds are Query, Cache, Email, Job, HTTPCall, Schedule, Callable,
+// and Task.
 func WithCallsiteKinds(kinds ...Kind) Option {
 	return func(c *config) {
 		c.callsiteKinds = make(map[Kind]struct{}, len(kinds))
@@ -183,6 +202,36 @@ func WithDisabledKinds(kinds ...Kind) Option {
 				c.disabledKinds[kind] = struct{}{}
 			}
 		}
+	}
+}
+
+// WithSidebarKinds replaces the ordered entity sections shown in the viewer
+// sidebar. Dashboard remains first and All Events remains last. Passing no
+// kinds hides every entity-specific section without disabling capture.
+func WithSidebarKinds(kinds ...Kind) Option {
+	return func(c *config) {
+		c.sidebarKinds = make([]Kind, 0, len(kinds))
+		seen := make(map[Kind]struct{}, len(kinds))
+		for _, kind := range kinds {
+			if !supportsSidebar(kind) {
+				continue
+			}
+			if _, duplicate := seen[kind]; duplicate {
+				continue
+			}
+			seen[kind] = struct{}{}
+			c.sidebarKinds = append(c.sidebarKinds, kind)
+		}
+	}
+}
+
+func supportsSidebar(kind Kind) bool {
+	switch kind {
+	case KindRequest, KindMiddleware, KindQuery, KindCache, KindJob, KindEmail,
+		KindLog, KindHTTPCall, KindSchedule, KindCallable, KindTask, KindException, KindEvent:
+		return true
+	default:
+		return false
 	}
 }
 

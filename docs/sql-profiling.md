@@ -18,6 +18,8 @@ profiler := webpprof.New(
         webpprof.KindJob,
         webpprof.KindHTTPCall,
         webpprof.KindSchedule,
+        webpprof.KindCallable,
+        webpprof.KindTask,
     ),
     webpprof.WithSourceLink(func(frame webpprof.SourceFrame) string {
         return fmt.Sprintf("vscode://file/%s:%d", frame.File, frame.Line)
@@ -36,8 +38,8 @@ trimmed paths; editor links must map them back to the local checkout.
 
 ## Plain SQL EXPLAIN
 
-The `database/sql` profiler can execute a real plan on the intercepted raw
-connection. It is disabled by default:
+The `database/sql`, Bun, GORM, and native pgx profilers can execute a real plan.
+It is disabled by default, and all four integrations use the same controls:
 
 ```go
 profiledConnector := webpprofsql.ProfileConnectorWith(
@@ -55,11 +57,30 @@ profiledConnector := webpprofsql.ProfileConnectorWith(
 db := sql.OpenDB(profiledConnector)
 ```
 
-One `SELECT`, `INSERT`, `UPDATE`, `DELETE`, or `WITH` statement is eligible.
-webpprof runs a driver-specific plain `EXPLAIN`, never `EXPLAIN ANALYZE`, before
-the real query and records plan duration separately. Plain EXPLAIN plans a write
-without applying it. A plan failure never replaces `Query.Error` or changes the
-original database result.
+Set `Explain`, `ExplainTimeout`, and `ExplainMaxRows` on
+`webpprofsql.Config`, `webpprofbun.Config`, `webpprofgorm.Config`, or
+`webpprofpgx.Config`. One `SELECT`, `INSERT`, `UPDATE`, `DELETE`, or `WITH`
+statement is eligible. webpprof runs a driver-specific plain `EXPLAIN`, never
+`EXPLAIN ANALYZE`, and records plan duration separately. Plain EXPLAIN plans a
+write without applying it. A plan failure never replaces `Query.Error` or
+changes the original database result.
+
+GORM's `Row`/`Rows` callback is deliberately excluded because the returned
+`*sql.Row` or `*sql.Rows` can still own the active connection. OTel query spans
+cannot be explained automatically because a completed span has neither a
+database handle nor bind arguments.
+
+For SQLite, PostgreSQL/pgx, and MySQL/MariaDB, the profiler also stores a small
+normalized `QueryPlan.Issues` list. The analyzer understands full scans,
+explicit temporary sorts, and estimates of at least 10,000 rows. It only raises
+full-scan or sort findings when the recorded query took at least 100 ms, so a
+fast scan of a small table is not labeled a bottleneck. These are hints, not a
+replacement for database-specific plan review.
+
+For `database/sql` queries, duration ends when the returned rows reach EOF,
+return an iteration error, or are closed. It therefore includes row decoding
+and driver streaming time instead of measuring only the initial `Query` call.
+Always close rows and check `rows.Err()`.
 
 Use EXPLAIN only with development or read-only credentials. Plans may expose
 schema names, indexes, predicates, and other sensitive database details.
@@ -69,6 +90,7 @@ schema names, indexes, predicates, and other sensitive database details.
 An integration can populate the same contract directly:
 
 ```go
+planText := "Index Scan using players_pkey on players ..."
 webpprof.LogQueryContext(ctx, webpprof.Query{
     SQL: "SELECT id FROM players WHERE id = ?",
     Callsite: []webpprof.SourceFrame{{
@@ -79,7 +101,8 @@ webpprof.LogQueryContext(ctx, webpprof.Query{
     Plan: &webpprof.QueryPlan{
         Command: "EXPLAIN SELECT id FROM players WHERE id = ?",
         Format:  "text",
-        Text:    "Index Scan using players_pkey on players ...",
+        Text:    planText,
+        Issues:  webpprof.DetectQueryPlanIssues("postgresql", planText),
     },
 })
 ```
