@@ -1,4 +1,4 @@
-go 1.25.13
+go 1.26.0
 
 use (
 	.
@@ -11,12 +11,12 @@ use (
 	./profiler/fiber
 	./profiler/gin
 	./profiler/gocache
-	./profiler/grpc
-	./profiler/gorm
-	./profiler/kafka
 	./profiler/gomail
 	./profiler/goqueue
 	./profiler/goredis
+	./profiler/gorm
+	./profiler/grpc
+	./profiler/kafka
 	./profiler/nats
 	./profiler/otel
 	./profiler/pgx
